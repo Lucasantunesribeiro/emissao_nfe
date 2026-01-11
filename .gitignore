@@ -118,3 +118,32 @@ CORRECOES_URGENTES.md
 appsettings.Development.json
 secrets.json
 
+# ========== AWS Credentials & Configuration ==========
+# Protege credenciais AWS e configurações sensíveis
+.aws/
+aws-credentials
+aws-config
+*credentials*
+*credential*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# AWS SAM
+.aws-sam/
+samconfig.toml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# ========== MCP (Model Context Protocol) ==========
+# Não ignorar .mcp.json (configuração compartilhada da equipe)
+# Mas ignorar logs e caches do MCP
+.mcp-cache/
+mcp-logs/
+*.mcp.log
+

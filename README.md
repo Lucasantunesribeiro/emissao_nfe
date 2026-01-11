@@ -88,6 +88,60 @@ powershell -NoProfile -File .\scripts\demo.ps1
 
 ---
 
+## ☁️ Deploy na AWS com Claude Code CLI
+
+Este projeto está configurado com **AWS MCP (Model Context Protocol)** para deploy automatizado na AWS via Claude Code CLI.
+
+### Setup Rápido AWS MCP
+
+```bash
+# 1. Instalar AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip && sudo ./aws/install
+
+# 2. Configurar credenciais
+aws configure --profile default
+
+# 3. Copiar variáveis de ambiente
+cp .env.example .env
+
+# 4. O arquivo .mcp.json já está configurado!
+# Agora você pode usar comandos naturais no Claude Code CLI:
+```
+
+### Exemplos de Comandos
+
+```bash
+# Deploy completo na AWS
+Claude: Configure a infraestrutura AWS completa para este projeto:
+- VPC multi-AZ
+- ECS Fargate para os serviços Go e .NET
+- RDS PostgreSQL para cada serviço
+- Amazon MQ (RabbitMQ)
+- S3 + CloudFront para o frontend Angular
+
+# Consultar recursos
+Claude: Liste todos os recursos AWS deste projeto
+
+# Monitoramento
+Claude: Configure CloudWatch Logs e alarmes
+```
+
+### Documentação AWS MCP
+
+- **Quick Start**: [`AWS_MCP_QUICKSTART.md`](AWS_MCP_QUICKSTART.md) - Setup em 5 minutos
+- **Documentação Completa**: [`docs/CONFIGURACAO_AWS_MCP.md`](docs/CONFIGURACAO_AWS_MCP.md) - Guia detalhado
+
+**Servidores MCP Configurados**:
+- ✅ CloudFormation (1.100+ recursos AWS)
+- ✅ AWS API (acesso direto às APIs)
+- ✅ IAM (gestão de permissões)
+- ✅ DynamoDB (NoSQL)
+- ✅ Lambda (serverless)
+- ✅ AWS Documentation (docs offline)
+
+---
+
 ## 🧪 Scripts de Verificação
 
 | Script | Objetivo | Saída Esperada |
