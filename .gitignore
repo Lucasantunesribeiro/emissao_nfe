@@ -1,0 +1,149 @@
+# ========== .NET / C# ==========
+# Build artifacts
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.dll
+*.exe
+*.pdb
+
+# Visual Studio / Rider
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Entity Framework
+**/Migrations/*.cs
+!**/Migrations/*_Initial.cs
+
+# ========== Go ==========
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+/vendor/
+go.work
+go.work.sum
+
+# Dependency management
+go.sum
+
+# ========== Angular / Node.js ==========
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build artifacts
+dist/
+tmp/
+out-tsc/
+*.js.map
+
+# Angular cache
+.angular/
+.sass-cache/
+
+# ========== Docker ==========
+# Não ignorar docker-compose.yml (necessário)
+# Mas ignorar dados persistentes
+postgres-data/
+rabbitmq-data/
+
+# ========== Databases ==========
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# ========== IDEs ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ========== Secrets / Environment ==========
+.env
+.env.local
+.env.*.local
+appsettings.Development.json
+secrets.json
+
+# ========== Sistema Operacional ==========
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ========== Arquivos temporários ==========
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# ========== Volume data (Docker) ==========
+*-data/
+
+# ========== Arquivos de Documentação ==========
+ENTREGA.md
+claude.md
+codex.md
+ROTEIRO.md
+ROTEIRO_2.md
+CORRECOES_URGENTES.md
+
+# ========== Arquivos de Configuração ==========
+.vscode/
+.idea/
+.env
+.env.local
+.env.*.local
+appsettings.Development.json
+secrets.json
+
+# ========== AWS Credentials & Configuration ==========
+# Protege credenciais AWS e configurações sensíveis
+.aws/
+aws-credentials
+aws-config
+*credentials*
+*credential*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# AWS SAM
+.aws-sam/
+samconfig.toml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# ========== MCP (Model Context Protocol) ==========
+# Não ignorar .mcp.json (configuração compartilhada da equipe)
+# Mas ignorar logs e caches do MCP
+.mcp-cache/
+mcp-logs/
+*.mcp.log
+

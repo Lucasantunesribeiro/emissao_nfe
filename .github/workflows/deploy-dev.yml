@@ -1,0 +1,261 @@
+name: Deploy to Development
+
+on:
+  workflow_dispatch: # Manual trigger
+  push:
+    branches: [main]
+    paths:
+      - 'servico-faturamento/**'
+      - 'servico-estoque/**'
+      - 'web-app/**'
+      - 'infra/cdk/**'
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+
+jobs:
+  build-and-push-images:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC
+      contents: read
+
+    outputs:
+      faturamento-tag: ${{ steps.meta-faturamento.outputs.tags }}
+      estoque-tag: ${{ steps.meta-estoque.outputs.tags }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build and Push: Faturamento (Go)
+      - name: Extract metadata (Faturamento)
+        id: meta-faturamento
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/nfe-faturamento-dev
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest
+
+      - name: Build and push Faturamento image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./servico-faturamento
+          file: ./servico-faturamento/Dockerfile
+          push: true
+          tags: ${{ steps.meta-faturamento.outputs.tags }}
+          labels: ${{ steps.meta-faturamento.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/arm64
+
+      # Build and Push: Estoque (.NET)
+      - name: Extract metadata (Estoque)
+        id: meta-estoque
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/nfe-estoque-dev
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest
+
+      - name: Build and push Estoque image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./servico-estoque
+          file: ./servico-estoque/Dockerfile
+          push: true
+          tags: ${{ steps.meta-estoque.outputs.tags }}
+          labels: ${{ steps.meta-estoque.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/arm64
+
+  deploy-infrastructure:
+    name: Deploy CDK Infrastructure
+    runs-on: ubuntu-latest
+    needs: build-and-push-images
+    permissions:
+      id-token: write
+      contents: read
+
+    defaults:
+      run:
+        working-directory: ./infra/cdk
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: infra/cdk/package-lock.json
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Deploy CDK stacks
+        run: npm run deploy:dev
+
+      - name: Get stack outputs
+        id: outputs
+        run: |
+          ALB_DNS=$(aws cloudformation describe-stacks \
+            --stack-name nfe-loadbalancer-dev \
+            --query 'Stacks[0].Outputs[?OutputKey==`AlbDnsName`].OutputValue' \
+            --output text)
+          echo "alb-dns=$ALB_DNS" >> $GITHUB_OUTPUT
+
+          CLOUDFRONT_URL=$(aws cloudformation describe-stacks \
+            --stack-name nfe-frontend-dev \
+            --query 'Stacks[0].Outputs[?OutputKey==`CloudFrontUrl`].OutputValue' \
+            --output text)
+          echo "cloudfront-url=$CLOUDFRONT_URL" >> $GITHUB_OUTPUT
+
+      - name: Update ECS services
+        run: |
+          aws ecs update-service \
+            --cluster nfe-cluster-dev \
+            --service nfe-faturamento-dev \
+            --force-new-deployment
+
+          aws ecs update-service \
+            --cluster nfe-cluster-dev \
+            --service nfe-estoque-dev \
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster nfe-cluster-dev \
+            --services nfe-faturamento-dev nfe-estoque-dev
+
+    outputs:
+      alb-dns: ${{ steps.outputs.outputs.alb-dns }}
+      cloudfront-url: ${{ steps.outputs.outputs.cloudfront-url }}
+
+  deploy-frontend:
+    name: Deploy Frontend to S3
+    runs-on: ubuntu-latest
+    needs: deploy-infrastructure
+    permissions:
+      id-token: write
+      contents: read
+
+    defaults:
+      run:
+        working-directory: ./web-app
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Angular app
+        run: npm run build
+        env:
+          API_URL: http://${{ needs.deploy-infrastructure.outputs.alb-dns }}
+
+      - name: Get S3 bucket name
+        id: bucket
+        run: |
+          BUCKET_NAME=$(aws cloudformation describe-stacks \
+            --stack-name nfe-frontend-dev \
+            --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
+            --output text)
+          echo "name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+
+      - name: Deploy to S3
+        run: aws s3 sync ./dist/web-app s3://${{ steps.bucket.outputs.name }}/ --delete
+
+      - name: Get CloudFront distribution ID
+        id: distribution
+        run: |
+          DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+            --stack-name nfe-frontend-dev \
+            --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' \
+            --output text)
+          echo "id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.distribution.outputs.id }} \
+            --paths "/*"
+
+  health-check:
+    name: Verify Deployment Health
+    runs-on: ubuntu-latest
+    needs: [deploy-infrastructure, deploy-frontend]
+
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 30
+
+      - name: Health check - Faturamento
+        run: |
+          curl -f http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/faturamento/health || exit 1
+
+      - name: Health check - Estoque
+        run: |
+          curl -f http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/estoque/health || exit 1
+
+      - name: Health check - Frontend
+        run: |
+          curl -f ${{ needs.deploy-infrastructure.outputs.cloudfront-url }} || exit 1
+
+  notify:
+    name: Send Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-infrastructure, deploy-frontend, health-check]
+    if: always()
+
+    steps:
+      - name: Deployment status
+        run: |
+          echo "🚀 Deployment to DEV completed!"
+          echo "ALB: http://${{ needs.deploy-infrastructure.outputs.alb-dns }}"
+          echo "CloudFront: ${{ needs.deploy-infrastructure.outputs.cloudfront-url }}"
