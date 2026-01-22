@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 
 	"servico-faturamento/internal/dominio"
 
@@ -11,6 +12,18 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// SECURITY: Regex para validar identificadores SQL (prevenir SQL injection)
+var sqlIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// sanitizeSQLIdentifier valida que um identificador SQL contém apenas caracteres seguros
+// Retorna erro se o identificador contiver caracteres perigosos
+func sanitizeSQLIdentifier(identifier, fieldName string) (string, error) {
+	if !sqlIdentifierRegex.MatchString(identifier) {
+		return "", fmt.Errorf("SECURITY: %s inválido - apenas letras, números e underscore são permitidos", fieldName)
+	}
+	return identifier, nil
+}
 
 func InicializarDB() (*gorm.DB, error) {
 	dsn := buildDSN()
@@ -28,23 +41,37 @@ func InicializarDB() (*gorm.DB, error) {
 	if schema := os.Getenv("DB_SCHEMA"); schema != "" {
 		slog.Info("Garantindo que schema existe", "schema", schema)
 
+		// SECURITY: Validar nome do schema antes de usar em SQL
+		safeSchema, err := sanitizeSQLIdentifier(schema, "DB_SCHEMA")
+		if err != nil {
+			return nil, err
+		}
+
 		// Criar schema se não existir
-		createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)
+		createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", safeSchema)
 		if err := db.Exec(createSchemaSQL).Error; err != nil {
-			return nil, fmt.Errorf("falha ao criar schema %s: %w", schema, err)
+			return nil, fmt.Errorf("falha ao criar schema %s: %w", safeSchema, err)
 		}
 
 		// Grant permissions ao usuário atual
-		dbUser := getEnv("DB_USER", "nfeadmin")
-		grantSQL := fmt.Sprintf("GRANT ALL PRIVILEGES ON SCHEMA %s TO %s", schema, dbUser)
-		if err := db.Exec(grantSQL).Error; err != nil {
-			slog.Warn("Não foi possível conceder permissões no schema", "error", err, "schema", schema, "user", dbUser)
-			// Não falhar aqui - pode não ter permissão para GRANT mas schema já existe
+		dbUser := getEnv("DB_USER", "")
+		if dbUser != "" {
+			// SECURITY: Validar nome do usuário antes de usar em SQL
+			safeUser, err := sanitizeSQLIdentifier(dbUser, "DB_USER")
+			if err != nil {
+				slog.Warn("Nome de usuário inválido, pulando GRANT", "error", err)
+			} else {
+				grantSQL := fmt.Sprintf("GRANT ALL PRIVILEGES ON SCHEMA %s TO %s", safeSchema, safeUser)
+				if err := db.Exec(grantSQL).Error; err != nil {
+					slog.Warn("Não foi possível conceder permissões no schema", "error", err, "schema", safeSchema, "user", safeUser)
+					// Não falhar aqui - pode não ter permissão para GRANT mas schema já existe
+				}
+			}
 		}
 
 		// Configurar search_path
-		slog.Info("Configurando search_path", "schema", schema)
-		if err := db.Exec(fmt.Sprintf("SET search_path TO %s", schema)).Error; err != nil {
+		slog.Info("Configurando search_path", "schema", safeSchema)
+		if err := db.Exec(fmt.Sprintf("SET search_path TO %s", safeSchema)).Error; err != nil {
 			return nil, fmt.Errorf("falha ao configurar search_path: %w", err)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"servico-faturamento/internal/dominio"
@@ -17,6 +18,14 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// SECURITY: Regex para validar chaves de idempotência
+var idempotencyKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,256}$`)
+
+// validateIdempotencyKey valida que a chave de idempotência tem formato seguro
+func validateIdempotencyKey(key string) bool {
+	return idempotencyKeyRegex.MatchString(key)
+}
 
 type Handlers struct {
 	DB *gorm.DB
@@ -146,6 +155,12 @@ func (h *Handlers) ImprimirNota(c *gin.Context) {
 	chaveIdem := c.GetHeader("Idempotency-Key")
 	if chaveIdem == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"erro": "Header Idempotency-Key obrigatorio"})
+		return
+	}
+
+	// SECURITY: Validar formato da chave de idempotência
+	if !validateIdempotencyKey(chaveIdem) {
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "Idempotency-Key com formato invalido (8-256 chars alfanumericos)"})
 		return
 	}
 
