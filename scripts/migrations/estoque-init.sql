@@ -1,5 +1,8 @@
 -- Criação das tabelas do serviço Estoque
 
+CREATE SCHEMA IF NOT EXISTS estoque;
+SET search_path TO estoque;
+
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Tabela produtos

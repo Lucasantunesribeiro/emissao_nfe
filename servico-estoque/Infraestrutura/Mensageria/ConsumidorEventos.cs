@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using ServicoEstoque.Api;
 using ServicoEstoque.Aplicacao.CasosDeUso;
 using ServicoEstoque.Aplicacao.DTOs;
 using ServicoEstoque.Dominio.Entidades;
@@ -150,8 +151,7 @@ public class ConsumidorEventos : BackgroundService
         var idMensagem = args.BasicProperties.MessageId ?? $"delivery-{args.DeliveryTag}";
 
         // verificar se ja processamos essa msg (evita duplicacao em retry)
-        var jaProcessada = await contexto.Set<MensagemProcessada>()
-            .AnyAsync(m => m.IDMensagem == idMensagem);
+        var jaProcessada = CompiledQueries.MensagemProcessadaExiste(contexto, idMensagem);
 
         if (jaProcessada)
         {
@@ -161,10 +161,9 @@ public class ConsumidorEventos : BackgroundService
 
         // deserializar payload JSON
         var corpo = Encoding.UTF8.GetString(args.Body.ToArray());
-        var evento = JsonSerializer.Deserialize<EventoSolicitacaoImpressao>(corpo, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        });
+        var evento = JsonSerializer.Deserialize(
+            corpo,
+            AppJsonSerializerContext.Default.EventoSolicitacaoImpressao);
 
         if (evento is null || evento.Itens is null || evento.Itens.Count == 0)
         {

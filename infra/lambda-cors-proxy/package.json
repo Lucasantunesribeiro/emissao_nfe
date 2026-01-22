@@ -1,0 +1,9 @@
+{
+  "name": "lambda-cors-proxy",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.705.0"
+  }
+}

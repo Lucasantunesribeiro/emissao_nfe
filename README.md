@@ -1,257 +1,307 @@
-# Viasoft Korp ERP – Sistema de Emissão NFe
+# Sistema de Emissão de Nota Fiscal Eletrônica (NFE)
 
-![Build](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge&logo=githubactions)
-![Docker](https://img.shields.io/badge/docker-compose-blue?style=for-the-badge&logo=docker)
-![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?style=for-the-badge&logo=dotnet)
-![Go](https://img.shields.io/badge/Go-1.23-00ADD8?style=for-the-badge&logo=go)
-![Angular](https://img.shields.io/badge/Angular-17-DD0031?style=for-the-badge&logo=angular)
-![RabbitMQ](https://img.shields.io/badge/RabbitMQ-event%20bus-FF6600?style=for-the-badge&logo=rabbitmq)
+Sistema distribuído serverless para emissão de notas fiscais eletrônicas, desenvolvido com arquitetura orientada a eventos e tecnologias modernas.
 
-Microarquitetura preparada para demo técnica: dois microserviços (Go + .NET 9), RabbitMQ coreografando a saga de emissão, front-end Angular 17 com signals e scripts PowerShell que comprovam rollback, idempotência e concorrência em poucos comandos.
+## 🏗️ Arquitetura
 
-> **Visão rápida:** Saga Pattern + Transactional Outbox + Idempotência ponta-a-ponta, prontos para mostrar ACID distribuído em ação.
+**Arquitetura Serverless Event-Driven**
+- **Backend**: AWS Lambda (Go + .NET 9)
+- **Mensageria**: AWS EventBridge + SQS
+- **Banco de Dados**: AWS RDS PostgreSQL (Free Tier)
+- **Frontend**: Angular 18 + TailwindCSS (hospedado em S3 + CloudFront)
+- **Infraestrutura como Código**: AWS CDK (TypeScript)
 
----
+## 🚀 Tecnologias
 
-## 🎬 Trailer da Demo
+### Backend
+- **Serviço Estoque**: .NET 9 + ASP.NET Core Minimal APIs + Entity Framework Core
+- **Serviço Faturamento**: Go 1.23 + Gin + GORM
+- **Lambda PDF Generator**: Go + gofpdf
 
-| Fluxo Feliz | Saldo Insuficiente | Concorrência Controlada |
-|-------------|--------------------|-------------------------|
-| ![Fluxo feliz](docs/media/fluxo-feliz.gif) | ![Saldo insuficiente](docs/media/fluxo-saldo-insuficiente.gif) | ![Concorrência](docs/media/fluxo-concorrencia.gif) |
+### Frontend
+- **Angular 18** (Standalone Components)
+- **TailwindCSS** para estilização
+- **RxJS** para programação reativa
 
-> Grave os GIFs com `scripts/demo.ps1` + `ffmpeg` e mantenha-os em `docs/media/` para deixar o repositório irresistível.
+### Infraestrutura
+- **AWS Lambda** (runtime: provided.al2023 para Go, dotnet9 para .NET)
+- **AWS API Gateway** (REST APIs)
+- **AWS RDS PostgreSQL** (t4g.micro - Free Tier)
+- **AWS EventBridge** (event bus customizado)
+- **AWS SQS** (filas de mensagens + DLQ)
+- **AWS S3 + CloudFront** (hospedagem frontend + PDFs)
+- **AWS Secrets Manager** (credenciais do banco)
+- **AWS CDK** (deploy automatizado)
 
----
+## 📦 Estrutura do Projeto
 
-## 🧭 Arquitetura (Mermaid)
-
-```mermaid
-flowchart LR
-    subgraph Front
-        A[Angular 17 SPA]
-    end
-
-    subgraph Services
-        B[(Serviço Faturamento \n Go + Gin + GORM)]
-        C[(Serviço Estoque \n .NET 9 + EF Core)]
-    end
-
-    subgraph Infra
-        D[(PostgreSQL Faturamento)]
-        E[(PostgreSQL Estoque)]
-        F{{RabbitMQ}}
-    end
-
-    A <-- REST --> B
-    A <-- REST --> C
-    B --- D
-    C --- E
-    B -- "Faturamento.ImpressaoSolicitada" --> F
-    F -- "Estoque.Reservado / ReservaRejeitada" --> C
+```
+emissao_nfe/
+├── servico-estoque/          # Microserviço de Estoque (.NET 9)
+│   ├── Api/                   # Controllers e configuração
+│   ├── Aplicacao/            # Casos de uso (CQRS)
+│   ├── Dominio/              # Entidades e regras de negócio
+│   └── Infraestrutura/       # Persistência e mensageria
+├── servico-faturamento/      # Microserviço de Faturamento (Go)
+│   ├── cmd/
+│   │   ├── api/              # API HTTP (Gin)
+│   │   ├── lambda/           # Lambda Function handler
+│   │   └── lambda-pdf/       # PDF Generator Lambda
+│   └── internal/
+│       ├── dominio/          # Entidades
+│       ├── config/           # Configuração do banco
+│       ├── manipulador/      # Handlers HTTP
+│       └── publicador/       # EventBridge publisher
+├── web-app/                  # Frontend Angular 18
+│   ├── src/app/
+│   │   ├── core/             # Services, models, guards
+│   │   ├── features/         # Componentes de funcionalidade
+│   │   └── shared/           # Componentes compartilhados
+│   └── src/environments/     # Configurações de ambiente
+├── infra/                    # Infraestrutura como Código
+│   ├── cdk/                  # AWS CDK (TypeScript)
+│   │   ├── bin/              # Entry points (ECS e Serverless)
+│   │   └── lib/
+│   │       ├── config/       # Configurações dev/prod
+│   │       └── stacks/       # Stacks CloudFormation
+│   └── scripts/              # Scripts de deploy e migrations
+├── docs/                     # Documentação do projeto
+└── scripts/                  # Scripts utilitários
 ```
 
-### Sequência de Impressão
+## 🎯 Funcionalidades
 
-```mermaid
-sequenceDiagram
-    participant FE as Angular SPA
-    participant FAT as Serviço Faturamento
-    participant EST as Serviço Estoque
-    participant MQ as RabbitMQ
+### ✅ Gerenciamento de Produtos
+- Cadastro de produtos com controle de estoque
+- Atualização de saldo em tempo real
+- Reserva de estoque com idempotência
 
-    FE->>FAT: POST /notas/{id}/imprimir (Idempotency-Key)
-    FAT->>FAT: Transação (Solicitação + Outbox)
-    FAT->>MQ: Evento Faturamento.ImpressaoSolicitada
-    MQ->>EST: Consome evento agregando itens
-    EST->>EST: Reserva cada produto (Concorrência otimista)
-    EST->>MQ: Evento Estoque.Reservado ou ReservaRejeitada
-    MQ->>FAT: Atualiza nota (lock pessimista) + feedback
-    FE->>FAT: GET /solicitacoes-impressao/{id} (polling)
-```
+### ✅ Emissão de Notas Fiscais
+- Criação de notas fiscais com múltiplos itens
+- Validação de estoque disponível
+- Fechamento de nota com atualização de estoque
 
----
+### ✅ Geração Automática de PDF
+- **EventBridge** publica evento `Faturamento.ImpressaoSolicitada`
+- **Lambda PDF Generator** gera PDF da nota em ~500ms
+- Upload automático para S3
+- Link de download via CloudFront
 
-## ⚡ Quick Start (3 comandos)
+### ✅ Processamento Assíncrono
+- Mensageria com AWS EventBridge + SQS
+- Pattern Outbox para garantia de entrega
+- DLQ (Dead Letter Queue) para mensagens com falha
 
+## 🛠️ Pré-requisitos
+
+### Desenvolvimento Local
+- **.NET 9 SDK** (https://dot.net)
+- **Go 1.23+** (https://go.dev)
+- **Node.js 22+** e npm (https://nodejs.org)
+- **AWS CLI v2** configurado
+- **AWS CDK CLI**: `npm install -g aws-cdk`
+
+### Deploy AWS
+- **Conta AWS** com Free Tier
+- **Credenciais AWS** configuradas (`aws configure`)
+- **Permissões IAM**: Lambda, API Gateway, RDS, S3, CloudFront, EventBridge, SQS, Secrets Manager
+
+## 📖 Instalação e Deploy
+
+### 1. Clone o repositório
 ```bash
-# 1. Clone e entre no projeto
-git clone https://github.com/sua-conta/Viasoft_Korp_ERP.git && cd Viasoft_Korp_ERP
-
-# 2. Suba toda a stack (Postgres, RabbitMQ, serviços)
-docker compose up -d --build
-
-# 3. Rode a demo guiada em PowerShell
-powershell -NoProfile -File .\scripts\demo.ps1
+git clone https://github.com/Lucasantunesribeiro/emissao_nfe.git
+cd emissao_nfe
 ```
 
-> Depois da demo, abra `http://localhost:4200` (ajuste `WEBAPP_PORT` se precisar de outra porta) e `http://localhost:15672` (RabbitMQ – admin/admin123).
-
----
-
-## ☁️ Deploy na AWS (Production-Ready)
-
-Sistema completo preparado para deploy profissional na AWS com infraestrutura como código (AWS CDK).
-
-### Arquitetura AWS
-
-```mermaid
-graph TB
-    subgraph "CDN & Frontend"
-        CF[CloudFront]
-        S3[S3 Angular SPA]
-    end
-
-    subgraph "Load Balancer"
-        ALB[Application Load Balancer]
-    end
-
-    subgraph "ECS Fargate"
-        ECS_GO[Go Faturamento<br/>2+ tasks]
-        ECS_NET[.NET Estoque<br/>2+ tasks]
-    end
-
-    subgraph "Data Layer"
-        RDS[(RDS PostgreSQL<br/>2 schemas)]
-        MQ[Amazon MQ<br/>RabbitMQ AMQPS]
-    end
-
-    CF --> S3
-    CF --> ALB
-    ALB --> ECS_GO
-    ALB --> ECS_NET
-    ECS_GO --> RDS
-    ECS_NET --> RDS
-    ECS_GO --> MQ
-    ECS_NET --> MQ
-```
-
-### Deploy Rápido (3 comandos)
-
+### 2. Configurar variáveis de ambiente
 ```bash
-# 1. Bootstrap CDK (primeira vez)
-cd infra/cdk && npm install
-cdk bootstrap
+# Copiar exemplo de configuração
+cp .env.example .env
 
-# 2. Deploy ambiente DEV
-npm run deploy:dev
-
-# 3. Deploy ambiente PROD (com aprovação)
-npm run deploy:prod
+# Editar .env com suas configurações AWS
+nano .env
 ```
 
-### Recursos AWS Criados
-
-**Networking:**
-- VPC com 2 AZs (public + private subnets)
-- NAT Gateway, Internet Gateway
-- Security Groups isolados por serviço
-
-**Compute:**
-- ECS Fargate Cluster
-- 2 Services (Faturamento Go + Estoque .NET)
-- ECR Repositories para imagens Docker
-- Application Load Balancer (ALB)
-
-**Data:**
-- RDS PostgreSQL 16 (schemas: faturamento, estoque)
-- Amazon MQ RabbitMQ (AMQPS porta 5671)
-- Secrets Manager (credenciais)
+### 3. Instalar dependências
 
 **Frontend:**
-- S3 Bucket privado + CloudFront
-- Cache otimizado (24h assets, 5min HTML)
+```bash
+cd web-app
+npm install
+cd ..
+```
 
-**Observability:**
-- CloudWatch Logs (retention 7 dias dev, 30 dias prod)
-- CloudWatch Alarms (CPU, 5xx, latency)
-- Health checks em todos os serviços
+**CDK:**
+```bash
+cd infra/cdk
+npm install
+cd ../..
+```
 
-### Documentação Completa AWS
+**Go (Faturamento):**
+```bash
+cd servico-faturamento
+go mod download
+cd ..
+```
 
-- **Infra CDK**: [`infra/cdk/README.md`](infra/cdk/README.md) - Guia completo CDK
-- **Backend Env Vars**: [`AWS_DEPLOY_ENV_VARS.md`](AWS_DEPLOY_ENV_VARS.md) - Variáveis de ambiente
-- **Frontend Deploy**: [`web-app/DEPLOY.md`](web-app/DEPLOY.md) - Deploy S3/CloudFront
-- **CI/CD**: [`.github/workflows/`](.github/workflows/) - Pipelines automatizados
+### 4. Build dos serviços
 
-**Estimativa de Custo:**
-- **Dev**: ~$185/mês (db.t4g.micro, mq.t3.micro, 1 NAT)
-- **Prod**: ~$1,250/mês (otimizado com Reserved/Savings)
+**Serviço Estoque (.NET):**
+```bash
+cd servico-estoque
+dotnet publish -c Release -r linux-x64 --self-contained false
+cd ..
+```
 
----
+**Serviço Faturamento (Go):**
+```bash
+cd servico-faturamento
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o build/bootstrap cmd/lambda/main.go
+cd ..
+```
 
-## 🧪 Scripts de Verificação
+**Lambda PDF Generator:**
+```bash
+cd servico-faturamento
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o build-pdf/bootstrap cmd/lambda-pdf/main.go
+cd ..
+```
 
-| Script | Objetivo | Saída Esperada |
-|--------|----------|----------------|
-| `scripts/demo.ps1` | Roda os 4 cenários (feliz, saldo insuficiente, idempotência, rollback). | Resumo da demo + validação de saldo. |
-| `scripts/test-rollback-final.ps1` | Garante que `X-Demo-Fail=true` reverte a transação. | HTTP 400 e saldo inalterado. |
-| `scripts/test-concurrency.ps1` | Dois reservistas simultâneos (espera 1 sucesso, 1 falha). | Saldo final = 2 com logs amigáveis. |
-| `scripts/validar-sistema.ps1` | Smoke test completo (opcional). | Status agregado dos serviços. |
+**Frontend:**
+```bash
+cd web-app
+npm run build
+cd ..
+```
 
-Os scripts rodam no Windows PowerShell tradicional (ou PowerShell 7) e abortam com saída ≠ 0 em caso de falha.
+### 5. Deploy da infraestrutura (Serverless)
 
----
+```bash
+cd infra/cdk
 
-## 🧱 Componentes Principais
+# Bootstrap CDK (primeira vez apenas)
+cdk bootstrap
 
-### Serviço Estoque (.NET 9)
-- ASP.NET Core minimal API (`ReservasController`, `ProdutosController`).
-- EF Core + PostgreSQL (`xmin` para concorrência otimista).
-- Outbox + BackgroundService (`PublicadorOutbox`).
-- Consumidor RabbitMQ refatorado para lotes (`ReservarEstoqueLoteCommand`).
+# Deploy de todas as stacks (dev)
+cdk deploy --all --require-approval never
 
-### Serviço Faturamento (Go)
-- Gin + GORM (`manipulador/notas.go`).
-- Transactional outbox (publicador resiliente).
-- Consumo idempotente com `mensagens_processadas`.
-- Tratamento de chave idempotente duplicada sem quebrar a demo.
+# Ou deploy individual
+cdk deploy NfeNetworkServerless-dev
+cdk deploy NfeSecretsServerless-dev
+cdk deploy NfeDatabaseServerless-dev
+cdk deploy NfeMessagingServerless-dev
+cdk deploy NfeFrontendServerless-dev
+cdk deploy NfeComputeServerless-dev
+```
 
-### Front-end Angular 17
-- Signals + Tailwind.
-- Polling inteligente com `takeWhile`, `timeout` e feedback visual.
-- Cards responsivos para 1080p com animações (habilite `BrowserAnimationsModule`).
+### 6. Deploy do Frontend para S3
 
----
+```bash
+cd web-app
 
-## 📡 Endpoints que brilham no vídeo
+# Sincronizar com S3
+aws s3 sync dist/web-app/ s3://nfe-frontend-dev-<ACCOUNT_ID>/
 
-| Serviço | Endpoint | Uso na demo |
-|---------|----------|-------------|
-| Estoque (API) | `POST /api/v1/produtos` | Cria produtos para cada cenário. |
-| Estoque (API) | `POST /api/v1/reservas` | Testa `X-Demo-Fail` e concorrência. |
-| Faturamento (API) | `POST /api/v1/notas/:id/imprimir` | Dispara saga + outbox. |
-| Faturamento (API) | `GET /api/v1/solicitacoes-impressao/:id` | Polling de status. |
-| Angular | `/produtos`, `/notas/:id` | Interface da apresentação. |
+# Invalidar cache CloudFront
+aws cloudfront create-invalidation --distribution-id <DISTRIBUTION_ID> --paths "/*"
+```
 
----
+## 🧪 Testando a Aplicação
 
-## 🩹 Troubleshooting Rápido
+### Acessar o Frontend
+Após o deploy, acesse a URL do CloudFront:
+```
+https://<distribution-id>.cloudfront.net
+```
 
-| Sintoma | Diagnóstico | Solução |
-|---------|-------------|---------|
-| Containers sobem mas APIs retornam 502 | RabbitMQ ainda não “healthy”. | `docker compose logs rabbitmq` e aguarde `Consumidor RabbitMQ iniciado`. |
-| Logs repetem “Mensagem marcada como ignorada” | Evento antigo no broker. | Limpe a fila `estoque-eventos` no painel RabbitMQ. |
-| `powershell -NoProfile -File .\scripts\demo.ps1` falha no cenário 1 | API não respondeu em 30s. | Verifique `docker compose logs servico-faturamento`; reinicie serviço. |
-| Frontend sem estilos | Falta `npm install` no diretório `web-app`. | `cd web-app && npm install && npm run start`. |
-| Demo precisa ser reiniciada | Deseja ambiente limpo. | `docker compose down -v && docker compose up -d --build`. |
+### Testar APIs diretamente
 
----
+**Listar Produtos:**
+```bash
+curl https://<api-id>.execute-api.us-east-1.amazonaws.com/dev/api/v1/produtos
+```
 
-## 🗺️ Roadmap e ideias para impressionar ainda mais
+**Criar Nota Fiscal:**
+```bash
+curl -X POST https://<api-id>.execute-api.us-east-1.amazonaws.com/dev/api/v1/notas \
+  -H "Content-Type: application/json" \
+  -d '{"numero":"NFE-001"}'
+```
 
-- [ ] Gravar GIFs reais dos 4 cenários e anexar ao repositório.
-- [ ] Adicionar testes automatizados (`go test`, `dotnet test`) no pipeline.
-- [ ] Coletar métricas com Prometheus + Grafana para monitorar filas/outbox.
-- [ ] Gerar dashboards de logs estruturados (Serilog + Loki / OpenTelemetry).
-- [ ] Empacotar front-end em Nginx para produção (`web-app/Dockerfile`).
+**Solicitar Impressão (gera PDF):**
+```bash
+curl -X POST https://<api-id>.execute-api.us-east-1.amazonaws.com/dev/api/v1/notas/<nota-id>/imprimir \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: unique-key-123"
+```
 
----
+## 💰 Custos Estimados (AWS)
 
-## 👤 Autor & Contato
+### Free Tier (12 meses)
+- **Lambda**: 1M requests/mês GRÁTIS
+- **API Gateway**: 1M requests/mês GRÁTIS
+- **RDS**: 750h/mês (t4g.micro) GRÁTIS
+- **S3**: 5GB storage GRÁTIS
+- **CloudFront**: 1TB transferência/mês GRÁTIS
+- **EventBridge**: 100K eventos/mês GRÁTIS
+- **SQS**: 1M requests/mês GRÁTIS
 
-**Lucas Antunes Ferreira**  
-Candidato ao estágio Viasoft Korp – Desenvolvimento C#, Go e Angular  
-- LinkedIn: [linkedin.com/in/lucasantunes](https://www.linkedin.com/in/lucasantunes)  
-- E-mail: lucas.antunes.dev@gmail.com  
+**Total Free Tier: ~$3/mês** (apenas Secrets Manager ~$1 + CloudWatch Logs ~$2)
 
-Gostou? Vamos conversar sobre como levar essa arquitetura para produção! 🚀
+### Após Free Tier
+- **Total estimado: ~$33/mês** (uso moderado)
+- **Economia de 83%** vs arquitetura ECS/EC2 (~$180/mês)
+
+## 📊 Monitoramento
+
+### CloudWatch Logs
+```bash
+# Logs do Lambda Estoque
+aws logs tail /aws/lambda/nfe-estoque-dev --follow
+
+# Logs do Lambda Faturamento
+aws logs tail /aws/lambda/nfe-faturamento-dev --follow
+
+# Logs do PDF Generator
+aws logs tail /aws/lambda/nfe-pdf-generator-dev --follow
+```
+
+### CloudWatch Metrics
+- Acesse o console AWS → CloudWatch → Metrics
+- Namespace: `AWS/Lambda`, `AWS/ApiGateway`, `AWS/RDS`
+
+## 🔧 Troubleshooting
+
+### Lambda timeout conectando ao RDS
+- Verificar se Lambda está na mesma VPC do RDS
+- Verificar Security Groups (Lambda deve ter acesso à porta 5432 do RDS)
+
+### PDF não gerado
+- Verificar logs do Lambda PDF Generator
+- Verificar se EventBridge Rule está ativa
+- Verificar permissões S3 do Lambda
+
+### CORS errors no frontend
+- Verificar configuração de CORS nas APIs
+- Verificar CloudFront headers policy
+
+## 📝 Licença
+
+Este projeto é licenciado sob a MIT License - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## 👥 Contribuindo
+
+Contribuições são bem-vindas! Por favor:
+1. Fork o projeto
+2. Crie uma branch para sua feature (`git checkout -b feature/AmazingFeature`)
+3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
+4. Push para a branch (`git push origin feature/AmazingFeature`)
+5. Abra um Pull Request
+
+## 📧 Contato
+
+Lucas Antunes Ribeiro - [GitHub](https://github.com/Lucasantunesribeiro)
+
+Link do Projeto: [https://github.com/Lucasantunesribeiro/emissao_nfe](https://github.com/Lucasantunesribeiro/emissao_nfe)

@@ -86,6 +86,66 @@ export class FrontendStack extends cdk.Stack {
       cookieBehavior: cloudfront.CacheCookieBehavior.none(),
     });
 
+    // Security Headers Policy (OWASP Best Practices)
+    const securityHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
+      responseHeadersPolicyName: `nfe-security-headers-${config.environment}`,
+      comment: 'Security headers following OWASP best practices',
+      securityHeadersBehavior: {
+        // Previne clickjacking attacks
+        frameOptions: {
+          frameOption: cloudfront.HeadersFrameOption.DENY,
+          override: true,
+        },
+        // HSTS: Force HTTPS por 1 ano
+        strictTransportSecurity: {
+          accessControlMaxAge: cdk.Duration.days(365),
+          includeSubdomains: true,
+          preload: true,
+          override: true,
+        },
+        // Previne MIME type sniffing
+        contentTypeOptions: {
+          override: true,
+        },
+        // XSS Protection (legacy mas útil em navegadores antigos)
+        xssProtection: {
+          protection: true,
+          modeBlock: true,
+          override: true,
+        },
+        // Content Security Policy (CSP)
+        contentSecurityPolicy: {
+          contentSecurityPolicy: [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline'", // unsafe-inline necessário para Angular
+            "style-src 'self' 'unsafe-inline'",  // unsafe-inline necessário para Tailwind
+            "img-src 'self' data: https:",
+            "font-src 'self' data:",
+            `connect-src 'self' https://*.execute-api.${cdk.Aws.REGION}.amazonaws.com https://cognito-idp.${cdk.Aws.REGION}.amazonaws.com`,
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+          ].join('; '),
+          override: true,
+        },
+        // Referrer Policy
+        referrerPolicy: {
+          referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+          override: true,
+        },
+      },
+      // Headers customizados adicionais
+      customHeadersBehavior: {
+        customHeaders: [
+          {
+            header: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=()',
+            override: true,
+          },
+        ],
+      },
+    });
+
     // CloudFront Distribution
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: `NFe Frontend Distribution ${config.environment}`,
@@ -114,6 +174,7 @@ export class FrontendStack extends cdk.Stack {
         cachedMethods: cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,
         compress: true,
         cachePolicy: htmlCachePolicy,
+        responseHeadersPolicy: securityHeadersPolicy,
       },
       additionalBehaviors: {
         '/assets/*': {

@@ -82,6 +82,9 @@ export const prodConfig: InfraConfig = {
     minTtl: 0,
   },
 
+  // CORS Configuration
+  cloudFrontDomain: 'https://nfe.meudominio.com', // Update with actual production domain
+
   // CloudWatch Alarms Configuration
   alarms: {
     cpuThreshold: 70,

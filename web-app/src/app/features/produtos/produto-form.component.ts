@@ -9,8 +9,8 @@ import { CriarProdutoRequest } from '../../core/models/produto.model';
   standalone: true,
   imports: [CommonModule, FormsModule],
   template: `
-    <div class="bg-white border rounded-lg p-6 shadow-sm">
-      <h2 class="text-xl font-semibold mb-4">Novo Produto</h2>
+    <div class="panel p-6">
+      <h2 class="text-xl font-display mb-4">Novo Produto</h2>
       
       <form (ngSubmit)="onSubmit()" #form="ngForm">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -22,7 +22,7 @@ import { CriarProdutoRequest } from '../../core/models/produto.model';
               name="sku"
               required
               maxlength="50"
-              class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              class="input-field"
               placeholder="PROD-001"
             />
           </div>
@@ -35,7 +35,7 @@ import { CriarProdutoRequest } from '../../core/models/produto.model';
               name="nome"
               required
               maxlength="200"
-              class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              class="input-field"
               placeholder="Produto Demo"
             />
           </div>
@@ -48,30 +48,47 @@ import { CriarProdutoRequest } from '../../core/models/produto.model';
               name="saldo"
               required
               min="0"
-              class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              class="input-field"
               placeholder="100"
             />
           </div>
         </div>
 
         @if (erro()) {
-          <div class="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p class="text-sm text-red-800">{{ erro() }}</p>
+          <div class="mt-4 p-4 bg-red-50 border-l-4 border-red-500 rounded-lg flex items-start gap-3 animate-fade-in">
+            <svg class="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+            </svg>
+            <div>
+              <p class="text-sm font-medium text-red-800">Erro ao criar produto</p>
+              <p class="text-sm text-red-700 mt-1">{{ erro() }}</p>
+            </div>
           </div>
         }
 
-        <div class="flex gap-3 mt-6">
+        @if (sucesso()) {
+          <div class="mt-4 p-4 bg-green-50 border-l-4 border-green-500 rounded-lg flex items-start gap-3 animate-fade-in">
+            <svg class="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+            </svg>
+            <div>
+              <p class="text-sm font-medium text-green-800">Produto criado com sucesso!</p>
+            </div>
+          </div>
+        }
+
+        <div class="flex flex-wrap gap-3 mt-6">
           <button
             type="submit"
             [disabled]="!form.valid || salvando()"
-            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition">
+            class="btn-primary disabled:opacity-60 disabled:cursor-not-allowed">
             {{ salvando() ? 'Salvando...' : 'Salvar' }}
           </button>
           <button
             type="button"
             (click)="cancelar.emit()"
             [disabled]="salvando()"
-            class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:cursor-not-allowed transition">
+            class="btn-secondary disabled:cursor-not-allowed">
             Cancelar
           </button>
         </div>
@@ -93,20 +110,40 @@ export class ProdutoFormComponent {
 
   salvando = signal(false);
   erro = signal<string | null>(null);
+  sucesso = signal(false);
 
   onSubmit(): void {
     this.erro.set(null);
+    this.sucesso.set(false);
     this.salvando.set(true);
 
     this.produtoService.criarProduto(this.formulario).subscribe({
       next: () => {
         this.salvando.set(false);
-        this.produtoCriado.emit();
+        this.sucesso.set(true);
         this.limparFormulario();
+
+        // Ocultar mensagem de sucesso após 3 segundos e emitir evento
+        setTimeout(() => {
+          this.sucesso.set(false);
+          this.produtoCriado.emit();
+        }, 2000);
       },
       error: (err) => {
         this.salvando.set(false);
-        this.erro.set(err.error?.erro || 'Erro ao criar produto');
+        console.error('Erro completo:', err);
+
+        // Extrair mensagem do erro
+        let message = 'Erro ao criar produto';
+
+        if (err instanceof Error) {
+          message = err.message;
+        } else if (err.error) {
+          // Tentar extrair mensagem do backend
+          message = err.error.erro || err.error.mensagem || err.error.message || message;
+        }
+
+        this.erro.set(message);
       }
     });
   }

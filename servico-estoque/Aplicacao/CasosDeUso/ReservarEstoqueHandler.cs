@@ -1,7 +1,10 @@
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ServicoEstoque.Api;
+using ServicoEstoque.Aplicacao.DTOs;
 using ServicoEstoque.Dominio.Entidades;
 using ServicoEstoque.Infraestrutura.Persistencia;
 
@@ -27,7 +30,7 @@ public sealed class ReservarEstoqueHandler
 
         try
         {
-            var produto = await _ctx.Produtos.FindAsync(new object[] { cmd.ProdutoId }, ct);
+            var produto = CompiledQueries.ProdutoPorIdTracking(_ctx, cmd.ProdutoId);
             if (produto is null)
                 return Resultado<ReservaEstoque>.Falha("Produto nao encontrado");
 
@@ -37,15 +40,17 @@ public sealed class ReservarEstoqueHandler
             {
                 _logger.LogWarning("[ReservarEstoque] Debito rejeitado para Produto={ProdutoId}: {Motivo}", cmd.ProdutoId, resultDebito.Mensagem);
 
+                var payloadRejeicao = new EventoReservaRejeitadaPayload(
+                    cmd.NotaId,
+                    resultDebito.Mensagem ?? "Falha ao reservar estoque");
+
                 var eventoRejeicao = new EventoOutbox
                 {
                     TipoEvento = "Estoque.ReservaRejeitada",
                     IdAgregado = cmd.NotaId,
-                    Payload = JsonSerializer.Serialize(new
-                    {
-                        notaId = cmd.NotaId,
-                        motivo = resultDebito.Mensagem
-                    }),
+                    Payload = JsonSerializer.Serialize(
+                        payloadRejeicao,
+                        AppJsonSerializerContext.Default.EventoReservaRejeitadaPayload),
                     DataOcorrencia = DateTime.UtcNow
                 };
                 _ctx.EventosOutbox.Add(eventoRejeicao);
@@ -69,18 +74,19 @@ public sealed class ReservarEstoqueHandler
             _ctx.ReservasEstoque.Add(reserva);
             _logger.LogInformation("[ReservarEstoque] Reserva registrada: {ReservaId}", reserva.Id);
 
+            var itensPayload = new List<EventoReservaItemPayload>
+            {
+                new(cmd.ProdutoId, cmd.Quantidade)
+            };
+
+            var payloadSucesso = new EventoReservaSucessoPayload(cmd.NotaId, itensPayload);
             var evento = new EventoOutbox
             {
                 TipoEvento = "Estoque.Reservado",
                 IdAgregado = cmd.NotaId,
-                Payload = JsonSerializer.Serialize(new
-                {
-                    notaId = cmd.NotaId,
-                    itens = new[]
-                    {
-                        new { produtoId = cmd.ProdutoId, quantidade = cmd.Quantidade }
-                    }
-                }),
+                Payload = JsonSerializer.Serialize(
+                    payloadSucesso,
+                    AppJsonSerializerContext.Default.EventoReservaSucessoPayload),
                 DataOcorrencia = DateTime.UtcNow
             };
             _ctx.EventosOutbox.Add(evento);
@@ -132,9 +138,7 @@ public sealed class ReservarEstoqueHandler
         {
             foreach (var item in cmd.Itens)
             {
-                var produto = await _ctx.Produtos
-                    .AsTracking()
-                    .FirstOrDefaultAsync(p => p.Id == item.ProdutoId, ct);
+                var produto = CompiledQueries.ProdutoPorIdTracking(_ctx, item.ProdutoId);
 
                 if (produto is null)
                 {
@@ -169,15 +173,18 @@ public sealed class ReservarEstoqueHandler
 
             await _ctx.SaveChangesAsync(ct);
 
+            var itensLote = cmd.Itens
+                .Select(i => new EventoReservaItemPayload(i.ProdutoId, i.Quantidade))
+                .ToList();
+            var payloadLote = new EventoReservaSucessoPayload(cmd.NotaId, itensLote);
+
             var eventoSucesso = new EventoOutbox
             {
                 TipoEvento = "Estoque.Reservado",
                 IdAgregado = cmd.NotaId,
-                Payload = JsonSerializer.Serialize(new
-                {
-                    notaId = cmd.NotaId,
-                    itens = cmd.Itens.Select(i => new { produtoId = i.ProdutoId, quantidade = i.Quantidade })
-                }),
+                Payload = JsonSerializer.Serialize(
+                    payloadLote,
+                    AppJsonSerializerContext.Default.EventoReservaSucessoPayload),
                 DataOcorrencia = DateTime.UtcNow
             };
 
@@ -211,15 +218,14 @@ public sealed class ReservarEstoqueHandler
         await using var tx = await _ctx.Database.BeginTransactionAsync(ct);
         try
         {
+            var payloadRejeicao = new EventoReservaRejeitadaPayload(notaId, motivo);
             var evt = new EventoOutbox
             {
                 TipoEvento = "Estoque.ReservaRejeitada",
                 IdAgregado = notaId,
-                Payload = JsonSerializer.Serialize(new
-                {
-                    notaId,
-                    motivo
-                }),
+                Payload = JsonSerializer.Serialize(
+                    payloadRejeicao,
+                    AppJsonSerializerContext.Default.EventoReservaRejeitadaPayload),
                 DataOcorrencia = DateTime.UtcNow
             };
 

@@ -6,7 +6,7 @@ export const devConfig = {
   vpc: {
     cidr: '10.0.0.0/16',
     maxAzs: 2,
-    natGateways: 1, // Economia: 1 NAT Gateway para dev
+    natGateways: 0, // Serverless: 0 NAT Gateways (usa VPC Endpoints para AWS services)
     enableFlowLogs: false,
   },
 
@@ -79,6 +79,9 @@ export const devConfig = {
     maxTtl: 1800, // 30 minutos
     minTtl: 0,
   },
+
+  // CORS Configuration
+  cloudFrontDomain: 'https://d3065hze06690c.cloudfront.net',
 
   // CloudWatch Alarms Configuration
   alarms: {

@@ -6,6 +6,7 @@ export interface SolicitacaoImpressao {
   dataCriacao: string;
   dataConclusao?: string;
   mensagemErro?: string;
+  pdfUrl?: string;
 }
 
 export interface ImprimirNotaResponse {
@@ -13,4 +14,5 @@ export interface ImprimirNotaResponse {
   notaId: string;
   status: string;
   chaveIdempotencia: string;
+  pdfUrl?: string;
 }

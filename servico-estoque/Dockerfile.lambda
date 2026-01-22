@@ -1,0 +1,25 @@
+FROM public.ecr.aws/lambda/provided:al2023 AS builder
+
+# Install .NET 9 SDK
+RUN dnf install -y tar gzip clang zlib-devel && \
+    curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 9.0 --install-dir /usr/share/dotnet && \
+    ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet && \
+    dotnet --info
+
+WORKDIR /build
+COPY . .
+
+# Build with Native AOT for ARM64
+RUN dotnet publish -c Release -r linux-arm64 --self-contained \
+    -p:PublishAot=true \
+    -p:StripSymbols=true \
+    -p:IlcOptimizationPreference=Size \
+    -o /output
+
+# Final Lambda image
+FROM public.ecr.aws/lambda/provided:al2023-arm64
+
+COPY --from=builder /output/ServicoEstoque ${LAMBDA_RUNTIME_DIR}/bootstrap
+COPY --from=builder /output/appsettings.json ${LAMBDA_RUNTIME_DIR}/
+
+CMD ["bootstrap"]

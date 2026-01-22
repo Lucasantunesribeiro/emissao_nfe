@@ -10,13 +10,16 @@ import { NotaFormComponent } from './nota-form.component';
   standalone: true,
   imports: [CommonModule, RouterLink, NotaFormComponent],
   template: `
-    <div class="container mx-auto px-4 py-8">
-      <div class="flex justify-between items-center mb-6">
-        <h1 class="text-3xl font-bold text-gray-800">Notas Fiscais</h1>
+    <div class="space-y-6 max-w-6xl mx-auto">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div class="space-y-2">
+          <h1 class="text-3xl md:text-4xl font-display text-gray-900">Notas Fiscais</h1>
+          <p class="text-sm text-gray-600">Crie, monitore e acompanhe o fechamento em tempo real.</p>
+        </div>
         <button
           (click)="mostrarFormulario.set(!mostrarFormulario())"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-          {{ mostrarFormulario() ? 'Cancelar' : '+ Nova Nota' }}
+          class="btn-primary">
+          {{ mostrarFormulario() ? 'Cancelar' : 'Nova Nota' }}
         </button>
       </div>
 
@@ -28,42 +31,42 @@ import { NotaFormComponent } from './nota-form.component';
         </app-nota-form>
       }
 
-      <div class="flex gap-2 mb-4">
+      <div class="flex flex-wrap gap-2">
         <button
           (click)="filtrarPorStatus(null)"
-          [class.bg-blue-600]="filtroStatus() === null"
+          [class.bg-orange-500]="filtroStatus() === null"
           [class.text-white]="filtroStatus() === null"
           [class.bg-gray-200]="filtroStatus() !== null"
-          class="px-3 py-1 rounded-lg text-sm transition">
+          class="btn-ghost text-sm">
           Todas
         </button>
         <button
           (click)="filtrarPorStatus('ABERTA')"
-          [class.bg-blue-600]="filtroStatus() === 'ABERTA'"
+          [class.bg-orange-500]="filtroStatus() === 'ABERTA'"
           [class.text-white]="filtroStatus() === 'ABERTA'"
           [class.bg-gray-200]="filtroStatus() !== 'ABERTA'"
-          class="px-3 py-1 rounded-lg text-sm transition">
+          class="btn-ghost text-sm">
           Abertas
         </button>
         <button
           (click)="filtrarPorStatus('FECHADA')"
-          [class.bg-blue-600]="filtroStatus() === 'FECHADA'"
+          [class.bg-orange-500]="filtroStatus() === 'FECHADA'"
           [class.text-white]="filtroStatus() === 'FECHADA'"
           [class.bg-gray-200]="filtroStatus() !== 'FECHADA'"
-          class="px-3 py-1 rounded-lg text-sm transition">
+          class="btn-ghost text-sm">
           Fechadas
         </button>
       </div>
 
       @if (carregando()) {
-        <div class="text-center py-8">
-          <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div class="panel p-6 text-center">
+          <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
           <p class="mt-2 text-gray-600">Carregando notas...</p>
         </div>
       }
 
       @if (!carregando() && notas().length === 0) {
-        <div class="text-center py-12 bg-gray-50 rounded-lg">
+        <div class="panel-soft text-center py-12">
           <p class="text-gray-500">Nenhuma nota encontrada</p>
         </div>
       }
@@ -72,12 +75,12 @@ import { NotaFormComponent } from './nota-form.component';
         <div class="grid gap-4">
           @for (nota of notas(); track nota.id) {
             <a [routerLink]="['/notas', nota.id]"
-               class="block bg-white border rounded-lg p-4 shadow-sm hover:shadow-md transition">
+               class="panel p-5 transition-transform duration-200 hover:-translate-y-0.5">
               <div class="flex justify-between items-start">
                 <div class="flex-1">
                   <div class="flex items-center gap-3">
                     <h3 class="text-lg font-semibold text-gray-800">{{ nota.numero }}</h3>
-                    <span class="px-2 py-1 text-xs rounded-full"
+                    <span class="tag"
                           [class.bg-yellow-100]="nota.status === 'ABERTA'"
                           [class.text-yellow-800]="nota.status === 'ABERTA'"
                           [class.bg-green-100]="nota.status === 'FECHADA'"

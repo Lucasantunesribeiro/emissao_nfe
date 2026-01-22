@@ -49,7 +49,10 @@ public static class HealthCheckEndpoint
         );
 
         var statusCode = overallStatus == "healthy" ? 200 : 503;
-        return Results.Json(response, statusCode: statusCode);
+        return Results.Json(
+            response,
+            AppJsonSerializerContext.Default.HealthCheckResponse,
+            statusCode: statusCode);
     }
 
     private static async Task<CheckResult> CheckDatabase(ContextoBancoDados contexto)
@@ -70,6 +73,13 @@ public static class HealthCheckEndpoint
 
     private static CheckResult CheckRabbitMQ(IConfiguration configuration)
     {
+        // Se RABBITMQ_URL estiver vazio ou "disabled", pula verificação (Lambda/EventBridge)
+        var rabbitMqUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL");
+        if (string.IsNullOrEmpty(rabbitMqUrl) || rabbitMqUrl == "disabled")
+        {
+            return new CheckResult("ok", Error: "rabbitmq disabled (using EventBridge)");
+        }
+
         var sw = Stopwatch.StartNew();
         try
         {
@@ -89,11 +99,16 @@ public static class HealthCheckEndpoint
 
     private static ConnectionFactory CreateRabbitMQFactory(IConfiguration configuration)
     {
-        var host = configuration["RabbitMQ__Host"] ?? "rabbitmq";
+        var host = configuration["RabbitMQ__Host"];
         var port = int.Parse(configuration["RabbitMQ__Port"] ?? "5672");
-        var username = configuration["RabbitMQ__Username"] ?? "admin";
-        var password = configuration["RabbitMQ__Password"] ?? "admin123";
+        var username = configuration["RabbitMQ__Username"];
+        var password = configuration["RabbitMQ__Password"];
         var useSsl = bool.Parse(configuration["RabbitMQ__UseSsl"] ?? "false");
+
+        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+        {
+            throw new InvalidOperationException("SECURITY: RabbitMQ credentials (Host, Username, Password) são obrigatórias via variáveis de ambiente.");
+        }
 
         return new ConnectionFactory
         {

@@ -1,28 +1,47 @@
-# ========== .NET / C# ==========
-# Build artifacts
-[Bb]in/
-[Oo]bj/
-[Dd]ebug/
-[Rr]elease/
+# ==============================================
+# Secrets e Credenciais
+# ==============================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
+aws-exports.js
+
+# ==============================================
+# Node.js
+# ==============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+package-lock.json
+yarn.lock
+
+# ==============================================
+# .NET
+# ==============================================
+bin/
+obj/
+publish/
+publish-*/
+*.user
+*.suo
+*.userprefs
+.vs/
+.vscode/
 *.dll
 *.exe
 *.pdb
 
-# Visual Studio / Rider
-.vs/
-.vscode/
-.idea/
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
-
-# Entity Framework
-**/Migrations/*.cs
-!**/Migrations/*_Initial.cs
-
-# ========== Go ==========
-# Build artifacts
+# ==============================================
+# Go
+# ==============================================
 *.exe
 *.exe~
 *.dll
@@ -30,120 +49,114 @@
 *.dylib
 *.test
 *.out
-
-# Go workspace
-/vendor/
 go.work
-go.work.sum
+build/
+build-*/
+dist/
+vendor/
 
-# Dependency management
-go.sum
+# ==============================================
+# CDK
+# ==============================================
+cdk.out/
+.cdk.staging/
+cdk.context.json
+*.d.ts
+*.js
+*.js.map
+!jest.config.js
+infra/cdk/lib/**/*.d.ts
+infra/cdk/lib/**/*.js
+infra/cdk/lib/**/*.js.map
 
-# ========== Angular / Node.js ==========
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-error.log*
-package-lock.json
-yarn.lock
+# ==============================================
+# AWS
+# ==============================================
+*.zip
+awscliv2.zip
+aws/
 
-# Build artifacts
+# ==============================================
+# Angular
+# ==============================================
 dist/
 tmp/
-out-tsc/
-*.js.map
-
-# Angular cache
 .angular/
 .sass-cache/
+connect.lock
+coverage/
+libpeerconnection.log
+testem.log
+typings/
 
-# ========== Docker ==========
-# Não ignorar docker-compose.yml (necessário)
-# Mas ignorar dados persistentes
-postgres-data/
-rabbitmq-data/
-
-# ========== Databases ==========
-*.db
-*.sqlite
-*.sqlite3
-
-# Logs
-*.log
-logs/
-
-# ========== IDEs ==========
-.vscode/
+# ==============================================
+# IDEs
+# ==============================================
 .idea/
 *.swp
 *.swo
 *~
+.project
+.classpath
+.settings/
+*.iml
+
+# ==============================================
+# OS
+# ==============================================
 .DS_Store
-
-# ========== Secrets / Environment ==========
-.env
-.env.local
-.env.*.local
-appsettings.Development.json
-secrets.json
-
-# ========== Sistema Operacional ==========
 Thumbs.db
-Desktop.ini
-.DS_Store
+desktop.ini
 
-# ========== Arquivos temporários ==========
+# ==============================================
+# Temporários e Logs
+# ==============================================
+*.log
+logs/
 *.tmp
-*.temp
-*.bak
+temp/
+.cache/
+response.json
+*.output
+
+# ==============================================
+# Scripts temporários
+# ==============================================
+test-*.ps1
+temp-*.ps1
+aliases.ps1
+
+# ==============================================
+# Documentação temporária
+# ==============================================
+*_STATUS.md
+*_FIX_*.md
+INCIDENTE_*.md
+RELATORIO_*.md
+AUDITORIA_*.md
+OTIMIZACAO_*.md
+DEPLOY_COMPLETO_*.md
+CORS_FIX_*.md
+
+# ==============================================
+# Backups
+# ==============================================
 *.backup
+*.bak
+*.old
+*~
 
-# ========== Volume data (Docker) ==========
-*-data/
+# ==============================================
+# Arquivos específicos do projeto
+# ==============================================
+Sistema_Emissao_NFE.sln
+Viasoft_Korp_ERP.sln
+Deploy-*.ps1
+enable-cors-api-gateway.sh
+update-api-integration.sh
+run-with-go.ps1
 
-# ========== Arquivos de Documentação ==========
-ENTREGA.md
-claude.md
-codex.md
-ROTEIRO.md
-ROTEIRO_2.md
-CORRECOES_URGENTES.md
-
-# ========== Arquivos de Configuração ==========
-.vscode/
-.idea/
-.env
-.env.local
-.env.*.local
-appsettings.Development.json
-secrets.json
-
-# ========== AWS Credentials & Configuration ==========
-# Protege credenciais AWS e configurações sensíveis
-.aws/
-aws-credentials
-aws-config
-*credentials*
-*credential*
-*.pem
-*.key
-*.p12
-*.pfx
-
-# AWS SAM
-.aws-sam/
-samconfig.toml
-
-# Terraform
-*.tfstate
-*.tfstate.*
-.terraform/
-.terraform.lock.hcl
-
-# ========== MCP (Model Context Protocol) ==========
-# Não ignorar .mcp.json (configuração compartilhada da equipe)
-# Mas ignorar logs e caches do MCP
-.mcp-cache/
-mcp-logs/
-*.mcp.log
-
+# Manter apenas
+!.gitignore
+!README.md
+!LICENSE

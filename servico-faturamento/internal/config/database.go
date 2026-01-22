@@ -24,8 +24,25 @@ func InicializarDB() (*gorm.DB, error) {
 		return nil, fmt.Errorf("falha ao conectar DB: %w", err)
 	}
 
-	// Configurar schema search_path se especificado
+	// CRITICAL: Criar schema se não existir (antes de configurar search_path)
 	if schema := os.Getenv("DB_SCHEMA"); schema != "" {
+		slog.Info("Garantindo que schema existe", "schema", schema)
+
+		// Criar schema se não existir
+		createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)
+		if err := db.Exec(createSchemaSQL).Error; err != nil {
+			return nil, fmt.Errorf("falha ao criar schema %s: %w", schema, err)
+		}
+
+		// Grant permissions ao usuário atual
+		dbUser := getEnv("DB_USER", "nfeadmin")
+		grantSQL := fmt.Sprintf("GRANT ALL PRIVILEGES ON SCHEMA %s TO %s", schema, dbUser)
+		if err := db.Exec(grantSQL).Error; err != nil {
+			slog.Warn("Não foi possível conceder permissões no schema", "error", err, "schema", schema, "user", dbUser)
+			// Não falhar aqui - pode não ter permissão para GRANT mas schema já existe
+		}
+
+		// Configurar search_path
 		slog.Info("Configurando search_path", "schema", schema)
 		if err := db.Exec(fmt.Sprintf("SET search_path TO %s", schema)).Error; err != nil {
 			return nil, fmt.Errorf("falha ao configurar search_path: %w", err)
@@ -57,12 +74,17 @@ func buildDSN() string {
 	}
 
 	// Prioridade 2: componentes individuais (12-factor para ECS)
-	host := getEnv("DB_HOST", "postgres-faturamento")
+	host := getEnv("DB_HOST", "")
 	port := getEnv("DB_PORT", "5432")
-	user := getEnv("DB_USER", "admin")
-	password := getEnv("DB_PASSWORD", "admin123")
-	dbname := getEnv("DB_NAME", "faturamento")
+	user := getEnv("DB_USER", "")
+	password := getEnv("DB_PASSWORD", "")
+	dbname := getEnv("DB_NAME", "")
 	sslmode := getEnv("DB_SSLMODE", "disable")
+
+	// SECURITY: Validar credenciais obrigatórias
+	if host == "" || user == "" || password == "" || dbname == "" {
+		panic("SECURITY: DB credentials (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) são obrigatórias via variáveis de ambiente")
+	}
 
 	// Schema será configurado via SET search_path separadamente
 	return fmt.Sprintf(

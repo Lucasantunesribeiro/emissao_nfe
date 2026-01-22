@@ -15,9 +15,9 @@ import { Produto } from '../../core/models/produto.model';
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink],
   template: `
-    <div class="container mx-auto px-4 py-8 max-w-5xl">
-      <div class="mb-6">
-        <a routerLink="/notas" class="text-blue-600 hover:text-blue-800 flex items-center gap-2">
+    <div class="space-y-6 max-w-5xl mx-auto">
+      <div>
+        <a routerLink="/notas" class="btn-ghost inline-flex items-center gap-2 text-sm">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
           </svg>
@@ -26,7 +26,7 @@ import { Produto } from '../../core/models/produto.model';
       </div>
 
       @if (carregando()) {
-        <div class="bg-white border rounded-lg shadow-sm p-6">
+        <div class="panel p-6">
           <div class="animate-pulse space-y-4">
             <div class="h-6 bg-slate-200 rounded"></div>
             <div class="h-4 bg-slate-200 rounded w-1/2"></div>
@@ -37,14 +37,14 @@ import { Produto } from '../../core/models/produto.model';
       }
 
       @if (nota()) {
-        <div class="bg-white border rounded-lg p-6 shadow-sm mb-6 transition-transform duration-300">
+        <div class="panel p-6 animate-fade-up">
           <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
             <div>
               <h1 class="text-3xl font-bold text-gray-800">{{ nota()!.numero }}</h1>
               <p class="text-sm text-gray-600 mt-1">ID: {{ nota()!.id }}</p>
               <p class="text-sm text-gray-600">Criada em {{ nota()!.dataCriacao | date:'dd/MM/yyyy HH:mm' }}</p>
             </div>
-            <span class="px-3 py-1 rounded-full text-sm font-medium self-start"
+            <span class="tag self-start"
                   [ngClass]="{
                     'bg-yellow-100 text-yellow-800': nota()!.status === 'ABERTA',
                     'bg-green-100 text-green-800': nota()!.status === 'FECHADA'
@@ -61,31 +61,44 @@ import { Produto } from '../../core/models/produto.model';
         </div>
 
         @if (statusImpressao() === 'aguardando') {
-          <div class="mb-4 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg p-4 flex items-center gap-3">
+          <div class="panel p-4 border border-sky-200 bg-sky-50 text-sky-700 flex items-center gap-3">
             <div class="h-5 w-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-            <span>Processando impressão... assim que o estoque confirmar, a nota será fechada.</span>
+            <span>Enviando solicitação de impressão...</span>
           </div>
         }
 
         @if (statusImpressao() === 'sucesso') {
-          <div class="mb-4 bg-green-50 border border-green-200 text-green-800 rounded-lg p-4 flex items-center gap-3">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-            </svg>
-            <span>Nota impressa com sucesso! Estoque atualizado e solicitação concluída.</span>
+          <div class="panel p-4 border border-emerald-200 bg-emerald-50">
+            <div class="flex items-center gap-3 text-emerald-800 mb-3">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              <span class="font-semibold">Nota impressa com sucesso!</span>
+            </div>
+            <p class="text-sm text-emerald-700 mb-3">PDF gerado e pronto para download. Estoque atualizado.</p>
+            @if (pdfUrl()) {
+              <a [href]="pdfUrl()!"
+                 target="_blank"
+                 class="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition font-medium">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Baixar PDF
+              </a>
+            }
           </div>
         }
 
         @if (statusImpressao() === 'falha') {
-          <div class="mb-4 bg-red-50 border border-red-200 text-red-800 rounded-lg p-4">
+          <div class="panel p-4 border border-red-200 bg-red-50 text-red-800">
             <div class="font-semibold mb-1">Falha ao processar a impressão</div>
             <p>{{ mensagemErro() }}</p>
           </div>
         }
 
         <!-- Itens da Nota -->
-        <div class="bg-white border rounded-lg p-6 shadow-sm mb-6">
-          <h2 class="text-xl font-semibold mb-4">Itens da Nota</h2>
+        <div class="panel p-6">
+          <h2 class="text-xl font-display mb-4">Itens da Nota</h2>
 
           @if (nota()!.itens && nota()!.itens!.length > 0) {
             <div class="overflow-x-auto">
@@ -113,7 +126,7 @@ import { Produto } from '../../core/models/produto.model';
                 <tfoot class="bg-gray-50">
                   <tr>
                     <td colspan="3" class="p-3 text-right font-semibold">Total:</td>
-                    <td class="p-3 text-right font-bold text-lg">R$ {{ calcularTotal() | number:'1.2-2' }}</td>
+                    <td class="p-3 text-right font-display text-lg">R$ {{ calcularTotal() | number:'1.2-2' }}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -125,14 +138,14 @@ import { Produto } from '../../core/models/produto.model';
 
         <!-- Adicionar Item -->
         @if (nota()!.status === 'ABERTA') {
-          <div class="bg-white border rounded-lg p-6 shadow-sm mb-6">
-            <h2 class="text-xl font-semibold mb-4">Adicionar Item</h2>
+          <div class="panel p-6">
+            <h2 class="text-xl font-display mb-4">Adicionar Item</h2>
 
             <form (ngSubmit)="adicionarItem()" #form="ngForm" class="space-y-4">
               <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">Produto</label>
-                  <select class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring focus:ring-blue-200"
+                  <select class="select-field"
                           name="produto"
                           required
                           [(ngModel)]="novoItem.produtoId">
@@ -144,14 +157,14 @@ import { Produto } from '../../core/models/produto.model';
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">Quantidade</label>
-                  <input type="number" min="1" class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring focus:ring-blue-200"
+                  <input type="number" min="1" class="input-field"
                          name="quantidade"
                          required
                          [(ngModel)]="novoItem.quantidade" />
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">Preço Unitário</label>
-                  <input type="number" min="0" step="0.01" class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring focus:ring-blue-200"
+                  <input type="number" min="0" step="0.01" class="input-field"
                          name="preco"
                          required
                          [(ngModel)]="novoItem.precoUnitario" />
@@ -165,7 +178,7 @@ import { Produto } from '../../core/models/produto.model';
               }
 
               <button type="submit"
-                      class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-60"
+                      class="btn-primary disabled:opacity-60"
                       [disabled]="adicionandoItem()">
                 @if (adicionandoItem()) {
                   <span class="inline-flex items-center gap-2">
@@ -180,25 +193,68 @@ import { Produto } from '../../core/models/produto.model';
           </div>
         }
 
-        <!-- Solicitar Impressão -->
-        <div class="bg-white border rounded-lg p-6 shadow-sm">
-          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              <h2 class="text-xl font-semibold">Solicitar impressão</h2>
-              <p class="text-sm text-gray-600">Será gerado um evento de reserva; acompanhe o status abaixo.</p>
-            </div>
-            <button class="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition disabled:opacity-60"
-                    (click)="solicitarImpressao()"
-                    [disabled]="statusImpressao() === 'aguardando'">
-              @if (statusImpressao() === 'aguardando') {
-                <span class="inline-flex items-center gap-2">
-                  <span class="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                  Processando...
-                </span>
-              } @else {
-                Solicitar Impressão
-              }
-            </button>
+        <!-- Ações da Nota -->
+        <div class="panel p-6">
+          <h2 class="text-xl font-display mb-4">Ações</h2>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Solicitar Impressão -->
+            @if (nota()!.status === 'ABERTA') {
+              <div class="border border-gray-200 rounded-lg p-4">
+                <h3 class="font-semibold mb-2">Solicitar Impressão</h3>
+                <p class="text-sm text-gray-600 mb-3">Gera evento de reserva de estoque e processa a nota.</p>
+                <button class="btn-success w-full disabled:opacity-60"
+                        (click)="solicitarImpressao()"
+                        [disabled]="statusImpressao() === 'aguardando'">
+                  @if (statusImpressao() === 'aguardando') {
+                    <span class="inline-flex items-center gap-2">
+                      <span class="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                      Processando...
+                    </span>
+                  } @else {
+                    <svg class="w-5 h-5 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                    </svg>
+                    Solicitar Impressão
+                  }
+                </button>
+              </div>
+            }
+
+            <!-- Fechar Nota -->
+            @if (nota()!.status === 'ABERTA') {
+              <div class="border border-gray-200 rounded-lg p-4">
+                <h3 class="font-semibold mb-2">Fechar Nota</h3>
+                <p class="text-sm text-gray-600 mb-3">Finaliza a nota e impede novas alterações.</p>
+                <button class="btn-primary w-full disabled:opacity-60"
+                        (click)="fecharNota()"
+                        [disabled]="fechandoNota()">
+                  @if (fechandoNota()) {
+                    <span class="inline-flex items-center gap-2">
+                      <span class="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                      Fechando...
+                    </span>
+                  } @else {
+                    <svg class="w-5 h-5 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Fechar Nota
+                  }
+                </button>
+                @if (erroFechar()) {
+                  <div class="mt-2 bg-red-50 text-red-700 border border-red-200 rounded px-3 py-2 text-sm">
+                    {{ erroFechar() }}
+                  </div>
+                }
+              </div>
+            }
+
+            @if (nota()!.status === 'FECHADA') {
+              <div class="border border-green-200 bg-green-50 rounded-lg p-4">
+                <h3 class="font-semibold text-green-800 mb-2">Nota Finalizada</h3>
+                <p class="text-sm text-green-700">Esta nota foi fechada e não pode mais ser alterada.</p>
+              </div>
+            }
           </div>
         </div>
       }
@@ -219,6 +275,9 @@ export class NotaDetalhesComponent implements OnInit, OnDestroy {
   erroItem = signal<string | null>(null);
   statusImpressao = signal<'idle' | 'aguardando' | 'sucesso' | 'falha'>('idle');
   mensagemErro = signal<string | null>(null);
+  pdfUrl = signal<string | null>(null);
+  fechandoNota = signal(false);
+  erroFechar = signal<string | null>(null);
 
   novoItem: AdicionarItemRequest = {
     produtoId: '',
@@ -282,7 +341,10 @@ export class NotaDetalhesComponent implements OnInit, OnDestroy {
           this.carregarNota(notaId);
         },
         error: (err) => {
-          this.erroItem.set(err.error?.erro || 'Erro ao adicionar item');
+          const message = err instanceof Error
+            ? err.message
+            : err.error?.erro || err.error?.mensagem || 'Erro ao adicionar item';
+          this.erroItem.set(message);
         }
       });
   }
@@ -294,26 +356,57 @@ export class NotaDetalhesComponent implements OnInit, OnDestroy {
     const chave = this.idempotenciaService.gerarChave();
     this.statusImpressao.set('aguardando');
     this.mensagemErro.set(null);
+    this.pdfUrl.set(null);
 
     this.notaService.imprimirNota(notaId, chave).subscribe({
-      next: (resposta) => this.iniciarPolling(resposta.id),
+      next: (resposta) => {
+        // Iniciar polling para obter PDF URL
+        this.iniciarPolling(resposta.id);
+      },
       error: (err) => {
         this.statusImpressao.set('falha');
-        this.mensagemErro.set(err.error?.erro || 'Erro ao solicitar impressão');
+        const message = err instanceof Error
+          ? err.message
+          : err.error?.erro || err.error?.mensagem || 'Erro ao solicitar impressão';
+        this.mensagemErro.set(message);
       }
     });
+  }
+
+  fecharNota(): void {
+    const notaId = this.nota()?.id;
+    if (!notaId) return;
+
+    this.erroFechar.set(null);
+    this.fechandoNota.set(true);
+
+    this.notaService.fecharNota(notaId)
+      .pipe(finalize(() => this.fechandoNota.set(false)))
+      .subscribe({
+        next: (resposta) => {
+          // Recarregar nota para atualizar status
+          this.carregarNota(notaId);
+          this.erroFechar.set(null);
+        },
+        error: (err) => {
+          const message = err instanceof Error
+            ? err.message
+            : err.error?.erro || err.error?.mensagem || 'Erro ao fechar nota';
+          this.erroFechar.set(message);
+        }
+      });
   }
 
   iniciarPolling(solicitacaoId: string): void {
     this.stopPolling();
 
-    this.pollingSub = timer(0, 1000).pipe(
+    this.pollingSub = timer(0, 2000).pipe(
       switchMap(() => this.notaService.consultarStatusImpressao(solicitacaoId)),
-      timeout(30000),
+      timeout(60000), // Aumentado para 60s
       takeWhile((sol) => sol.status === 'PENDENTE', true),
       catchError((err) => {
-        this.statusImpressao.set('falha');
-        this.mensagemErro.set('Timeout aguardando resposta');
+        this.statusImpressao.set('aguardando');
+        this.mensagemErro.set('Gerando PDF em background... Aguarde até 10 segundos.');
         return of(null);
       }),
       finalize(() => this.pollingSub = undefined)
@@ -324,6 +417,7 @@ export class NotaDetalhesComponent implements OnInit, OnDestroy {
         if (sol.status === 'CONCLUIDA') {
           this.statusImpressao.set('sucesso');
           this.mensagemErro.set(null);
+          this.pdfUrl.set(sol.pdfUrl || null);
           this.carregarNota(this.nota()!.id);
         } else if (sol.status === 'FALHOU') {
           this.statusImpressao.set('falha');

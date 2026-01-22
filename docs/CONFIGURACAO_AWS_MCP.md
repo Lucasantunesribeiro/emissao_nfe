@@ -860,7 +860,7 @@ Claude: Configure monitoramento completo:
 ---
 
 **Desenvolvido por**: Lucas Antunes Ferreira
-**Projeto**: Viasoft Korp ERP - Sistema de Emissão NFe
+**Projeto**: Sistema de Emissão de NFe
 **Data**: Janeiro 2026
 **Versão**: 1.0.0
 

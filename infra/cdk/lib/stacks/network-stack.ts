@@ -138,6 +138,82 @@ export class NetworkStack extends cdk.Stack {
       'Allow RabbitMQ Management from ECS tasks'
     );
 
+    // ============================================
+    // VPC Endpoints (Serverless Mode)
+    // ============================================
+    // Quando natGateways = 0 (serverless), Lambda precisa de VPC Endpoints
+    // para acessar serviços AWS (EventBridge, SQS, etc) sem internet
+    if (config.vpc.natGateways === 0) {
+      // Security Group para VPC Endpoints
+      const vpcEndpointSecurityGroup = new ec2.SecurityGroup(this, 'VpcEndpointSecurityGroup', {
+        vpc: this.vpc,
+        securityGroupName: `nfe-vpce-sg-${config.environment}`,
+        description: 'Security group for VPC Endpoints',
+        allowAllOutbound: false,
+      });
+
+      // Allow HTTPS from Lambda/ECS Security Group
+      vpcEndpointSecurityGroup.addIngressRule(
+        this.ecsSecurityGroup,
+        ec2.Port.tcp(443),
+        'Allow HTTPS from Lambda/ECS to VPC Endpoints'
+      );
+
+      // VPC Endpoint: EventBridge
+      const eventBridgeEndpoint = new ec2.InterfaceVpcEndpoint(this, 'EventBridgeEndpoint', {
+        vpc: this.vpc,
+        service: ec2.InterfaceVpcEndpointAwsService.EVENTBRIDGE,
+        subnets: {
+          subnetType: ec2.SubnetType.PUBLIC, // Lambda está em public subnet
+        },
+        securityGroups: [vpcEndpointSecurityGroup],
+        privateDnsEnabled: true,
+      });
+
+      // VPC Endpoint: SQS
+      const sqsEndpoint = new ec2.InterfaceVpcEndpoint(this, 'SqsEndpoint', {
+        vpc: this.vpc,
+        service: ec2.InterfaceVpcEndpointAwsService.SQS,
+        subnets: {
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        securityGroups: [vpcEndpointSecurityGroup],
+        privateDnsEnabled: true,
+      });
+
+      // VPC Endpoint: Secrets Manager (opcional, mas útil)
+      const secretsManagerEndpoint = new ec2.InterfaceVpcEndpoint(this, 'SecretsManagerEndpoint', {
+        vpc: this.vpc,
+        service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
+        subnets: {
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        securityGroups: [vpcEndpointSecurityGroup],
+        privateDnsEnabled: true,
+      });
+
+      // VPC Gateway Endpoint: S3 (FREE - sem custo adicional)
+      const s3Endpoint = this.vpc.addGatewayEndpoint('S3Endpoint', {
+        service: ec2.GatewayVpcEndpointAwsService.S3,
+        subnets: [
+          { subnetType: ec2.SubnetType.PUBLIC },
+          { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+          { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+        ],
+      });
+
+      // Output: VPC Endpoints
+      new cdk.CfnOutput(this, 'VpcEndpoints', {
+        value: JSON.stringify({
+          eventBridge: eventBridgeEndpoint.vpcEndpointId,
+          sqs: sqsEndpoint.vpcEndpointId,
+          secretsManager: secretsManagerEndpoint.vpcEndpointId,
+          s3: s3Endpoint.vpcEndpointId,
+        }),
+        description: 'VPC Endpoint IDs for Serverless Mode (NAT Gateway = 0)',
+      });
+    }
+
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: this.vpc.vpcId,

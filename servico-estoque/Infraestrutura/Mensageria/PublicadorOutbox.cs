@@ -57,11 +57,7 @@ public class PublicadorOutbox : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var ctx = scope.ServiceProvider.GetRequiredService<ContextoBancoDados>();
 
-        var eventosPendentes = await ctx.EventosOutbox
-            .Where(e => e.DataPublicacao == null && e.TentativasEnvio < 5)
-            .OrderBy(e => e.DataOcorrencia)
-            .Take(10)
-            .ToListAsync(ct);
+        var eventosPendentes = CompiledQueries.EventosOutboxPendentes(ctx);
 
         if (!eventosPendentes.Any())
             return;

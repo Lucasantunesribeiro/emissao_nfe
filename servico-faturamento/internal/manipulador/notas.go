@@ -1,6 +1,7 @@
 package manipulador
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"servico-faturamento/internal/dominio"
+	"servico-faturamento/internal/publicador"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -233,6 +235,13 @@ func (h *Handlers) ImprimirNota(c *gin.Context) {
 		}
 
 		slog.Info("Evento de impressao criado no outbox", "tipoEvento", eventoOutbox.TipoEvento, "notaId", notaID)
+
+		// Publicar diretamente no EventBridge (serverless mode)
+		if err := publicador.PublicarEvento(context.Background(), eventoOutbox.TipoEvento, notaID.String(), payload); err != nil {
+			slog.Warn("Failed to publish event to EventBridge", "error", err)
+			// Don't fail transaction - outbox will retry
+		}
+
 		return nil
 	})
 
@@ -270,10 +279,40 @@ func (h *Handlers) ConsultarStatusImpressao(c *gin.Context) {
 	c.JSON(http.StatusOK, sol)
 }
 
+// FecharNotaManual - Handler HTTP para fechar nota manualmente
+func (h *Handlers) FecharNotaManual(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "ID invalido"})
+		return
+	}
+
+	if err := h.fecharNotaInterno(id); err != nil {
+		if err.Error() == "nota deve ter status ABERTA para ser fechada" {
+			c.JSON(http.StatusBadRequest, gin.H{"erro": "Nota ja esta fechada ou com status invalido"})
+			return
+		}
+		if err.Error() == "nota deve ter pelo menos 1 item para ser fechada" {
+			c.JSON(http.StatusBadRequest, gin.H{"erro": "Nota precisa ter itens antes de ser fechada"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"erro": "Falha ao fechar nota"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mensagem": "Nota fechada com sucesso"})
+}
+
+// FecharNota - Método interno usado pelo consumidor de eventos
 func (h *Handlers) FecharNota(notaID uuid.UUID) error {
+	return h.fecharNotaInterno(notaID)
+}
+
+func (h *Handlers) fecharNotaInterno(notaID uuid.UUID) error {
 	return h.DB.Transaction(func(tx *gorm.DB) error {
 		var nota dominio.NotaFiscal
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Preload("Itens").
 			First(&nota, "id = ?", notaID).Error; err != nil {
 			return err
 		}
@@ -294,6 +333,13 @@ func (h *Handlers) FecharNota(notaID uuid.UUID) error {
 				"data_conclusao": agora,
 			}).Error; err != nil {
 			return err
+		}
+
+		// Publicar evento EventBridge para gerar PDF
+		payload := map[string]string{"notaId": notaID.String()}
+		if err := publicador.PublicarEvento(context.Background(), "Faturamento.NotaFechada", notaID.String(), payload); err != nil {
+			slog.Warn("Failed to publish NotaFechada event to EventBridge", "error", err, "notaId", notaID)
+			// Não falhar a transação por causa disso
 		}
 
 		return nil

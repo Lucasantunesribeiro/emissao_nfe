@@ -1,0 +1,54 @@
+name: Build Lambda Estoque
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    paths:
+      - 'servico-estoque/**'
+      - '.github/workflows/build-lambda-estoque.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build Lambda Estoque
+        run: |
+          cd servico-estoque
+          dotnet publish -c Release -r linux-arm64 --self-contained \
+            -p:PublishAot=true \
+            -p:StripSymbols=true \
+            -o publish
+
+      - name: Create ZIP
+        run: |
+          cd servico-estoque/publish
+          zip -r ../../lambda-estoque-${{ github.sha }}.zip bootstrap
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name nfe-estoque-dev \
+            --zip-file fileb://lambda-estoque-${{ github.sha }}.zip
+
+          echo "✅ Lambda Estoque updated successfully!"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-estoque-${{ github.sha }}
+          path: lambda-estoque-${{ github.sha }}.zip
+          retention-days: 7

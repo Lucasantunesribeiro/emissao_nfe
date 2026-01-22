@@ -1,4 +1,4 @@
-# 🚀 Frontend Angular - Sistema de Emissão de NFe
+# 🚀 Frontend Angular - Sistema de Emissão de Notas Fiscais
 
 Sistema web para gerenciamento de produtos e emissão de notas fiscais eletrônicas integrado com backend Go (Faturamento) e .NET (Estoque).
 
@@ -133,7 +133,7 @@ export const environment = {
 ### Serviços Disponíveis
 
 - **ProdutoService:** CRUD de produtos (API Estoque .NET)
-- **NotaFiscalService:** Gestão de NFe (API Faturamento Go)
+- **NotaFiscalService:** Gestão das notas fiscais (API Faturamento Go)
 - **IdempotenciaService:** Geração de chaves de idempotência
 
 ### Interceptors
@@ -259,4 +259,4 @@ npm run build:prod -- --verbose
 
 ## 📄 Licença
 
-Propriedade de Viasoft Korp - Uso interno apenas
+Propriedade de Sistema de Emissão de NFe - Uso interno apenas

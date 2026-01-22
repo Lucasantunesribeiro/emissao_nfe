@@ -122,7 +122,7 @@ function Validar-Saldo {
     Write-Step "Saldo confirmado: $SaldoEsperado" ([ConsoleColor]::Green)
 }
 
-Write-Section 'Demo Sistema NFe - Viasoft Korp' ([ConsoleColor]::Cyan)
+Write-Section 'Demo Sistema de Emissão de NFe' ([ConsoleColor]::Cyan)
 
 Write-Section 'Verificando servicos'
 Write-Step 'Health Estoque' ([ConsoleColor]::Gray)

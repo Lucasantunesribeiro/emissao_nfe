@@ -45,4 +45,8 @@ export class NotaFiscalService {
   consultarStatusImpressao(solicitacaoId: string): Observable<SolicitacaoImpressao> {
     return this.http.get<SolicitacaoImpressao>(`${this.solicitacoesUrl}/${solicitacaoId}`);
   }
+
+  fecharNota(notaId: string): Observable<{mensagem: string}> {
+    return this.http.put<{mensagem: string}>(`${this.baseUrl}/${notaId}/fechar`, {});
+  }
 }

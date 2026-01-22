@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using ServicoEstoque.Api;
 using ServicoEstoque.Aplicacao.CasosDeUso;
 using ServicoEstoque.Aplicacao.DTOs;
 
@@ -20,6 +21,12 @@ public class ReservasController : ControllerBase
     [HttpPost]
     public async Task<ActionResult> Reservar([FromBody] ReservarEstoqueRequest request)
     {
+        if (!ModelState.IsValid)
+            return ValidationProblem(ModelState);
+
+        if (request.NotaId == Guid.Empty || request.ProdutoId == Guid.Empty)
+            return BadRequest(new ApiErroResponse("NotaId e ProdutoId sao obrigatorios"));
+
         var demoFail = Request.Headers["X-Demo-Fail"].FirstOrDefault();
         bool simularFalha = demoFail?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
 
@@ -52,20 +59,16 @@ public class ReservasController : ControllerBase
                 request.NotaId, request.ProdutoId, request.Quantidade
             );
 
-            return Ok(new
-            {
-                sucesso = true,
-                reservaId = resultado.Dados!.Id,
-                mensagem = "Reserva criada com sucesso"
-            });
+            return Ok(new ReservaResponse(
+                true,
+                ReservaId: resultado.Dados!.Id,
+                Mensagem: "Reserva criada com sucesso"));
         }
 
         _logger.LogWarning("Falha ao reservar: {Erro}", resultado.Mensagem);
 
-        return BadRequest(new
-        {
-            sucesso = false,
-            mensagem = resultado.Mensagem
-        });
+        return BadRequest(new ReservaResponse(
+            false,
+            Erro: resultado.Mensagem));
     }
 }

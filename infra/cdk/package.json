@@ -10,7 +10,11 @@
     "deploy:dev": "cdk deploy --all --context env=dev",
     "deploy:prod": "cdk deploy --all --context env=prod --require-approval broadening",
     "destroy:dev": "cdk destroy --all --context env=dev",
-    "destroy:prod": "cdk destroy --all --context env=prod"
+    "destroy:prod": "cdk destroy --all --context env=prod",
+    "deploy:serverless:dev": "cdk deploy --all --app 'npx ts-node --prefer-ts-exts bin/nfe-infra-serverless.ts' --context env=dev",
+    "deploy:serverless:prod": "cdk deploy --all --app 'npx ts-node --prefer-ts-exts bin/nfe-infra-serverless.ts' --context env=prod --require-approval broadening",
+    "destroy:serverless:dev": "cdk destroy --all --app 'npx ts-node --prefer-ts-exts bin/nfe-infra-serverless.ts' --context env=dev",
+    "synth:serverless": "cdk synth --app 'npx ts-node --prefer-ts-exts bin/nfe-infra-serverless.ts'"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

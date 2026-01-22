@@ -22,8 +22,11 @@ func IniciarPublicador(db *gorm.DB) error {
 	pub := &PublicadorOutbox{DB: db}
 
 	rabbitURL := os.Getenv("RABBITMQ_URL")
-	if rabbitURL == "" {
-		rabbitURL = "amqp://admin:admin123@rabbitmq:5672/"
+
+	// Se RABBITMQ_URL estiver vazio ou "disabled", pula inicialização (para Lambda/EventBridge)
+	if rabbitURL == "" || rabbitURL == "disabled" {
+		slog.Info("RabbitMQ desabilitado, pulando inicialização do publicador outbox")
+		return nil
 	}
 
 	var conn *amqp.Connection

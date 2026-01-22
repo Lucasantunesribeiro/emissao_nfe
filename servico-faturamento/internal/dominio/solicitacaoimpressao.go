@@ -12,6 +12,7 @@ type SolicitacaoImpressao struct {
 	NotaID            uuid.UUID  `gorm:"type:uuid;not null" json:"notaId"`
 	Status            string     `gorm:"not null" json:"status"` // PENDENTE, CONCLUIDA, FALHOU
 	MensagemErro      *string    `json:"mensagemErro,omitempty"`
+	PdfURL            *string    `json:"pdfUrl,omitempty"`
 	ChaveIdempotencia string     `gorm:"unique" json:"chaveIdempotencia"`
 	DataCriacao       time.Time  `gorm:"not null" json:"dataCriacao"`
 	DataConclusao     *time.Time `json:"dataConclusao,omitempty"`
