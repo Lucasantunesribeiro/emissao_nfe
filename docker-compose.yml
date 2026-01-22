@@ -16,11 +16,11 @@ services:
   postgres-estoque:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: estoque
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin123  # ⚠️ APENAS DESENVOLVIMENTO LOCAL
+      POSTGRES_DB: ${POSTGRES_ESTOQUE_DB:-estoque}
+      POSTGRES_USER: ${POSTGRES_ESTOQUE_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ESTOQUE_PASSWORD:-admin123}  # ⚠️ APENAS DESENVOLVIMENTO - Use .env para override
     ports:
-      - "5432:5432"
+      - "${POSTGRES_ESTOQUE_PORT:-5432}:5432"
     volumes:
       - estoque-data:/var/lib/postgresql/data
       - ./scripts/migrations/estoque-init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -33,11 +33,11 @@ services:
   postgres-faturamento:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: faturamento
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: ${POSTGRES_FATURAMENTO_DB:-faturamento}
+      POSTGRES_USER: ${POSTGRES_FATURAMENTO_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_FATURAMENTO_PASSWORD:-admin123}  # ⚠️ APENAS DESENVOLVIMENTO - Use .env para override
     ports:
-      - "5433:5432"
+      - "${POSTGRES_FATURAMENTO_PORT:-5433}:5432"
     volumes:
       - faturamento-data:/var/lib/postgresql/data
       - ./scripts/migrations/faturamento-init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -50,11 +50,11 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: admin
-      RABBITMQ_DEFAULT_PASS: admin123
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin123}  # ⚠️ APENAS DESENVOLVIMENTO - Use .env para override
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -64,13 +64,13 @@ services:
   servico-estoque:
     build: ./servico-estoque
     ports:
-      - "5001:8080"
+      - "${SERVICO_ESTOQUE_PORT:-5001}:8080"
     environment:
-      ConnectionStrings__DefaultConnection: Host=postgres-estoque;Database=estoque;Username=admin;Password=admin123;Search Path=estoque
+      ConnectionStrings__DefaultConnection: Host=postgres-estoque;Database=${POSTGRES_ESTOQUE_DB:-estoque};Username=${POSTGRES_ESTOQUE_USER:-admin};Password=${POSTGRES_ESTOQUE_PASSWORD:-admin123};Search Path=estoque
       DB_SCHEMA: estoque
       RabbitMQ__Host: rabbitmq
-      RabbitMQ__Username: admin
-      RabbitMQ__Password: admin123  # ⚠️ APENAS DESENVOLVIMENTO LOCAL
+      RabbitMQ__Username: ${RABBITMQ_USER:-admin}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD:-admin123}  # ⚠️ APENAS DESENVOLVIMENTO - Use .env para override
     depends_on:
       postgres-estoque:
         condition: service_healthy
@@ -80,10 +80,10 @@ services:
   servico-faturamento:
     build: ./servico-faturamento
     ports:
-      - "5002:8080"
+      - "${SERVICO_FATURAMENTO_PORT:-5002}:8080"
     environment:
-      DATABASE_URL: postgres://admin:admin123@postgres-faturamento:5432/faturamento?sslmode=disable
-      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672/
+      DATABASE_URL: postgres://${POSTGRES_FATURAMENTO_USER:-admin}:${POSTGRES_FATURAMENTO_PASSWORD:-admin123}@postgres-faturamento:5432/${POSTGRES_FATURAMENTO_DB:-faturamento}?sslmode=disable
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASSWORD:-admin123}@rabbitmq:5672/
     depends_on:
       postgres-faturamento:
         condition: service_healthy

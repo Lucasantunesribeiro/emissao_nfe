@@ -106,8 +106,10 @@ builder.Services.AddCors(opts =>
         }
         else
         {
-            // Fallback seguro: apenas CloudFront dev (nunca ALL_ORIGINS)
-            policy.WithOrigins("https://d3065hze06690c.cloudfront.net");
+            // SECURITY: Sem CORS_ORIGINS configurado - rejeitar todas as origens por segurança
+            // Configure CORS_ORIGINS com os domínios autorizados (CloudFront, localhost dev, etc)
+            logger.LogWarning("CORS_ORIGINS não configurado - CORS desabilitado por segurança");
+            policy.WithOrigins(); // Nenhuma origem permitida
         }
 
         policy.AllowAnyHeader()
