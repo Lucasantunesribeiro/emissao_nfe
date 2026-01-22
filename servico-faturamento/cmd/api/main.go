@@ -55,9 +55,16 @@ func main() {
 	r := gin.Default()
 
 	r.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := c.Request.Header.Get("Origin")
+		allowedOrigin := resolveCorsOrigin(origin)
+
+		if allowedOrigin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, Idempotency-Key")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -76,6 +83,7 @@ func main() {
 		v1.POST("/notas", handlers.CriarNota)
 		v1.GET("/notas", handlers.ListarNotas)
 		v1.GET("/notas/:id", handlers.BuscarNota)
+		v1.PUT("/notas/:id/fechar", handlers.FecharNotaManual)
 		v1.POST("/notas/:id/itens", handlers.AdicionarItem)
 		v1.POST("/notas/:id/imprimir", handlers.ImprimirNota)
 
@@ -115,4 +123,38 @@ func main() {
 	}
 
 	slog.Info("Servidor encerrado com sucesso")
+}
+
+// resolveCorsOrigin valida origem contra lista permitida
+func resolveCorsOrigin(origin string) string {
+	corsOrigins := strings.TrimSpace(os.Getenv("CORS_ORIGINS"))
+	if corsOrigins == "" {
+		slog.Warn("SECURITY: CORS_ORIGINS não configurado. Bloqueando todas as origens.")
+		return ""
+	}
+
+	origins := strings.Split(corsOrigins, ",")
+	normalized := make([]string, 0, len(origins))
+	for _, entry := range origins {
+		value := strings.TrimSpace(entry)
+		if value != "" && value != "*" {
+			normalized = append(normalized, value)
+		}
+	}
+
+	if len(normalized) == 0 {
+		slog.Warn("SECURITY: CORS_ORIGINS vazio ou contém apenas '*'. Bloqueando todas as origens.")
+		return ""
+	}
+
+	// Validar origem contra lista permitida
+	for _, allowed := range normalized {
+		if strings.EqualFold(allowed, origin) {
+			return origin
+		}
+	}
+
+	// Origem não permitida
+	slog.Warn("SECURITY: Origem não permitida bloqueada", "origin", origin, "allowed", normalized)
+	return ""
 }

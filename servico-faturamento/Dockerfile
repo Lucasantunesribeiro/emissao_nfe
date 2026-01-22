@@ -17,9 +17,19 @@ FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates
 
-WORKDIR /root/
+# SECURITY: Cria usuário não-privilegiado para rodar a aplicação
+RUN addgroup -g 1000 appuser && \
+    adduser -D -u 1000 -G appuser appuser
+
+WORKDIR /home/appuser
 
 COPY --from=builder /bin/servico-faturamento .
+
+# SECURITY: Muda dono dos arquivos para appuser
+RUN chown -R appuser:appuser /home/appuser
+
+# SECURITY: Executa como usuário não-root
+USER appuser
 
 EXPOSE 8080
 

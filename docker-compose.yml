@@ -1,10 +1,24 @@
+# ⚠️ SECURITY WARNING - DESENVOLVIMENTO LOCAL APENAS ⚠️
+# Este arquivo contém credenciais em texto plano (admin123) e é seguro APENAS para desenvolvimento local.
+# NUNCA use essas credenciais em produção ou commit arquivos .env com dados sensíveis.
+#
+# Para produção na AWS:
+# - Use AWS Secrets Manager (já configurado no CDK em infra/cdk/lib/stacks/secrets-stack.ts)
+# - As credenciais são geradas automaticamente e rotacionadas pelo CDK
+# - Os Lambdas leem credenciais via IAM role (sem expor senhas)
+#
+# Para rodar localmente com segurança:
+# 1. Copie .env.example para .env
+# 2. Use senhas fortes geradas aleatoriamente
+# 3. Adicione .env no .gitignore (já configurado)
+
 services:
   postgres-estoque:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: estoque
       POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin123
+      POSTGRES_PASSWORD: admin123  # ⚠️ APENAS DESENVOLVIMENTO LOCAL
     ports:
       - "5432:5432"
     volumes:
@@ -52,10 +66,11 @@ services:
     ports:
       - "5001:8080"
     environment:
-      ConnectionStrings__DefaultConnection: Host=postgres-estoque;Database=estoque;Username=admin;Password=admin123
+      ConnectionStrings__DefaultConnection: Host=postgres-estoque;Database=estoque;Username=admin;Password=admin123;Search Path=estoque
+      DB_SCHEMA: estoque
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: admin
-      RabbitMQ__Password: admin123
+      RabbitMQ__Password: admin123  # ⚠️ APENAS DESENVOLVIMENTO LOCAL
     depends_on:
       postgres-estoque:
         condition: service_healthy

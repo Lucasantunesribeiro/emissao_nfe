@@ -93,10 +93,18 @@ func checkDatabase(ctx context.Context, db *gorm.DB) CheckResult {
 }
 
 func checkRabbitMQ(ctx context.Context) CheckResult {
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+
+	// Se RabbitMQ estiver desabilitado (Lambda/EventBridge), retorna ok com aviso
+	if rabbitURL == "" || rabbitURL == "disabled" {
+		return CheckResult{
+			Status: "ok",
+			Error:  "rabbitmq disabled (using EventBridge)",
+		}
+	}
+
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
-	rabbitURL := getEnv("RABBITMQ_URL", "amqp://admin:admin123@rabbitmq:5672/")
 
 	start := time.Now()
 

@@ -1,7 +1,9 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace ServicoEstoque.Aplicacao.DTOs;
 
 public record ReservarEstoqueRequest(
-    Guid NotaId,
-    Guid ProdutoId,
-    int Quantidade
+    [property: Required] Guid NotaId,
+    [property: Required] Guid ProdutoId,
+    [property: Range(1, int.MaxValue)] int Quantidade
 );

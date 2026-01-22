@@ -9,8 +9,8 @@ import { CriarNotaRequest } from '../../core/models/nota-fiscal.model';
   standalone: true,
   imports: [CommonModule, FormsModule],
   template: `
-    <div class="bg-white border rounded-lg p-6 shadow-sm">
-      <h2 class="text-xl font-semibold mb-4">Nova Nota Fiscal</h2>
+    <div class="panel p-6">
+      <h2 class="text-xl font-display mb-4">Nova Nota Fiscal</h2>
       
       <form (ngSubmit)="onSubmit()" #form="ngForm">
         <div>
@@ -21,7 +21,7 @@ import { CriarNotaRequest } from '../../core/models/nota-fiscal.model';
             name="numero"
             required
             maxlength="50"
-            class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            class="input-field"
             placeholder="NFE-001"
           />
         </div>
@@ -32,18 +32,18 @@ import { CriarNotaRequest } from '../../core/models/nota-fiscal.model';
           </div>
         }
 
-        <div class="flex gap-3 mt-6">
+        <div class="flex flex-wrap gap-3 mt-6">
           <button
             type="submit"
             [disabled]="!form.valid || salvando()"
-            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition">
+            class="btn-primary disabled:opacity-60 disabled:cursor-not-allowed">
             {{ salvando() ? 'Salvando...' : 'Salvar' }}
           </button>
           <button
             type="button"
             (click)="cancelar.emit()"
             [disabled]="salvando()"
-            class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:cursor-not-allowed transition">
+            class="btn-secondary disabled:cursor-not-allowed">
             Cancelar
           </button>
         </div>
@@ -73,7 +73,10 @@ export class NotaFormComponent {
       },
       error: (err) => {
         this.salvando.set(false);
-        this.erro.set(err.error?.erro || 'Erro ao criar nota');
+        const message = err instanceof Error
+          ? err.message
+          : err.error?.erro || err.error?.mensagem || 'Erro ao criar nota';
+        this.erro.set(message);
       }
     });
   }

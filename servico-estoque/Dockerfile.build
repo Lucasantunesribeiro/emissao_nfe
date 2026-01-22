@@ -1,0 +1,17 @@
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023
+
+# Install .NET 9 SDK
+RUN dnf install -y tar gzip && \
+    curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 9.0 --install-dir /usr/share/dotnet && \
+    ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
+
+WORKDIR /build
+COPY . .
+
+RUN dotnet publish -c Release -r linux-arm64 --self-contained \
+    -p:PublishAot=true \
+    -p:StripSymbols=true \
+    -p:IlcOptimizationPreference=Size \
+    -o /output
+
+CMD ["cp", "-r", "/output", "/host-output"]
