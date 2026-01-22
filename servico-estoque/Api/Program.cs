@@ -54,7 +54,7 @@ builder.Services.AddSwaggerGen();
 var connStr = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
 if (string.IsNullOrEmpty(connStr))
 {
-    logger.LogCritical("SECURITY: ConnectionStrings__DefaultConnection não configurada. Sistema não pode iniciar sem credenciais seguras.");
+    Log.Fatal("SECURITY: ConnectionStrings__DefaultConnection não configurada. Sistema não pode iniciar sem credenciais seguras.");
     throw new InvalidOperationException("ConnectionStrings__DefaultConnection é obrigatória. Configure via variáveis de ambiente ou Secrets Manager.");
 }
 
@@ -108,7 +108,7 @@ builder.Services.AddCors(opts =>
         {
             // SECURITY: Sem CORS_ORIGINS configurado - rejeitar todas as origens por segurança
             // Configure CORS_ORIGINS com os domínios autorizados (CloudFront, localhost dev, etc)
-            logger.LogWarning("CORS_ORIGINS não configurado - CORS desabilitado por segurança");
+            Log.Warning("CORS_ORIGINS não configurado - CORS desabilitado por segurança");
             policy.WithOrigins(); // Nenhuma origem permitida
         }
 
