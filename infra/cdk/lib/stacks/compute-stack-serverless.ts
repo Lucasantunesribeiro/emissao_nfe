@@ -94,7 +94,7 @@ export class ComputeStackServerless extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaVPCAccessExecutionRole'),
+        // VPCAccessExecutionRole REMOVED: Lambdas no longer run in VPC
       ],
     });
 
@@ -119,14 +119,7 @@ export class ComputeStackServerless extends cdk.Stack {
       }));
     }
 
-    // Security Group para Lambdas
-    const lambdaSecurityGroup = new ec2.SecurityGroup(this, 'LambdaSecurityGroup', {
-      vpc,
-      description: 'Security Group for Lambda functions',
-      allowAllOutbound: true,
-    });
-
-    // Nota: dbSecurityGroup já permite conexões de toda a VPC (configurado no DatabaseStack)
+    // Security Group REMOVED: Lambdas no longer run in VPC (cost savings)
 
     // ===========================
     // 2.5. Lambda Authorizer (JWT Cognito)
@@ -138,7 +131,9 @@ export class ComputeStackServerless extends cdk.Stack {
       // Lambda Authorizer Function
       const authorizerLogGroup = new logs.LogGroup(this, 'AuthorizerLogGroup', {
         logGroupName: `/aws/lambda/nfe-authorizer-${config.environment}`,
-        retention: logs.RetentionDays.ONE_WEEK,
+        retention: config.environment === 'prod'
+          ? logs.RetentionDays.ONE_MONTH
+          : logs.RetentionDays.ONE_DAY,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
 
@@ -192,7 +187,9 @@ export class ComputeStackServerless extends cdk.Stack {
     // Lambda: Faturamento (Go ARM64)
     const faturamentoLogGroup = new logs.LogGroup(this, 'FaturamentoLogGroup', {
       logGroupName: `/aws/lambda/nfe-faturamento-${config.environment}`,
-      retention: logs.RetentionDays.ONE_WEEK,
+      retention: config.environment === 'prod'
+        ? logs.RetentionDays.ONE_MONTH
+        : logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -212,7 +209,7 @@ export class ComputeStackServerless extends cdk.Stack {
       environment: {
         ENVIRONMENT: config.environment,
         LOG_LEVEL: 'INFO',
-        CODE_VERSION: '2026-01-14-1945', // Force redeploy with CORS fix
+        CODE_VERSION: '2026-01-29-finops', // FinOps: Lambda moved OUT of VPC
         DB_HOST: rdsProxyEndpoint,
         DB_PORT: '5432',
         DB_USER: dbSecret.secretValueFromJson('username').unsafeUnwrap(),
@@ -225,17 +222,17 @@ export class ComputeStackServerless extends cdk.Stack {
         SQS_ESTOQUE_RESERVA_URL: estoqueReservaQueue.queueUrl,
         CORS_ORIGINS: config.cloudFrontDomain || '*',
       },
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      securityGroups: [lambdaSecurityGroup],
-      allowPublicSubnet: true, // Lambda não precisa internet, apenas acessa RDS na VPC
+      // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
+      // RDS is publicly accessible with restricted Security Group
       reservedConcurrentExecutions: config.environment === 'prod' ? 10 : undefined,
     });
 
     // Lambda: Estoque (.NET 9 ARM64)
     const estoqueLogGroup = new logs.LogGroup(this, 'EstoqueLogGroup', {
       logGroupName: `/aws/lambda/nfe-estoque-${config.environment}`,
-      retention: logs.RetentionDays.ONE_WEEK,
+      retention: config.environment === 'prod'
+        ? logs.RetentionDays.ONE_MONTH
+        : logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -262,10 +259,7 @@ export class ComputeStackServerless extends cdk.Stack {
         CORS_ORIGINS: config.cloudFrontDomain || '*',
         DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1', // Otimização .NET
       },
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      securityGroups: [lambdaSecurityGroup],
-      allowPublicSubnet: true, // Lambda não precisa internet, apenas acessa RDS na VPC
+      // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
       reservedConcurrentExecutions: config.environment === 'prod' ? 10 : undefined,
     });
 
@@ -286,7 +280,9 @@ export class ComputeStackServerless extends cdk.Stack {
     // Lambda: Outbox Processor (scheduled job)
     const outboxLogGroup = new logs.LogGroup(this, 'OutboxLogGroup', {
       logGroupName: `/aws/lambda/nfe-outbox-processor-${config.environment}`,
-      retention: logs.RetentionDays.ONE_WEEK,
+      retention: config.environment === 'prod'
+        ? logs.RetentionDays.ONE_MONTH
+        : logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -312,10 +308,7 @@ export class ComputeStackServerless extends cdk.Stack {
         DB_SSLMODE: 'require',
         EVENT_BUS_NAME: eventBus.eventBusName,
       },
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      securityGroups: [lambdaSecurityGroup],
-      allowPublicSubnet: true, // Lambda não precisa internet, apenas acessa RDS na VPC
+      // VPC REMOVED: Lambda now runs outside VPC
     });
 
     // EventBridge Rule: Trigger outbox processor a cada 1 minuto
@@ -329,7 +322,9 @@ export class ComputeStackServerless extends cdk.Stack {
     // Lambda: PDF Generator (event-driven)
     const pdfLogGroup = new logs.LogGroup(this, 'PdfGeneratorLogGroup', {
       logGroupName: `/aws/lambda/nfe-pdf-generator-${config.environment}`,
-      retention: logs.RetentionDays.ONE_WEEK,
+      retention: config.environment === 'prod'
+        ? logs.RetentionDays.ONE_MONTH
+        : logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -356,10 +351,7 @@ export class ComputeStackServerless extends cdk.Stack {
         PDF_BUCKET_NAME: frontendBucketName || `nfe-frontend-${config.environment}-${cdk.Aws.ACCOUNT_ID}`,
         CLOUDFRONT_DOMAIN: cloudFrontDomain || config.cloudFrontDomain || '',
       },
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      securityGroups: [lambdaSecurityGroup],
-      allowPublicSubnet: true,
+      // VPC REMOVED: Lambda now runs outside VPC
     });
 
     // EventBridge Rule: Trigger PDF Generator quando impressão é solicitada
@@ -604,6 +596,61 @@ export class ComputeStackServerless extends cdk.Stack {
     new cdk.CfnOutput(this, 'DlqUrl', {
       value: dlq.queueUrl,
       description: 'Dead Letter Queue URL',
+    });
+
+    // ===========================
+    // 7. Custom Resource: Cleanup Orphaned Log Groups
+    // ===========================
+
+    // Lambda function to set retention policy on orphaned log groups
+    const cleanupLogsFunction = new lambda.Function(this, 'CleanupLogsFunction', {
+      functionName: `nfe-cleanup-logs-${config.environment}`,
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(`
+import boto3
+import json
+
+logs_client = boto3.client('logs')
+
+ORPHANED_LOG_GROUPS = [
+  '/aws/apigateway/welcome',
+  '/aws/lambda/nfe-db-cleanup-temp',
+  '/aws/lambda/nfe-estoque-cors-proxy-dev',
+  '/aws/lambda/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a',
+]
+
+def handler(event, context):
+    if event['RequestType'] == 'Delete':
+        return {'PhysicalResourceId': 'cleanup-logs'}
+
+    for log_group in ORPHANED_LOG_GROUPS:
+        try:
+            logs_client.put_retention_policy(
+                logGroupName=log_group,
+                retentionInDays=1  # DEV: 1 dia
+            )
+            print(f'Set retention for {log_group}')
+        except logs_client.exceptions.ResourceNotFoundException:
+            print(f'{log_group} not found, skipping')
+
+    return {'PhysicalResourceId': 'cleanup-logs'}
+      `),
+      timeout: cdk.Duration.seconds(60),
+      logGroup: new logs.LogGroup(this, 'CleanupLogsLogGroup', {
+        retention: logs.RetentionDays.ONE_DAY,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    });
+
+    cleanupLogsFunction.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['logs:PutRetentionPolicy'],
+      resources: ['*'],
+    }));
+
+    new cdk.CustomResource(this, 'CleanupLogsResource', {
+      serviceToken: cleanupLogsFunction.functionArn,
     });
 
     // Tags
