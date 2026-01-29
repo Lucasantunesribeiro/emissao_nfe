@@ -50,7 +50,9 @@ export class NetworkStack extends cdk.Stack {
     if (config.vpc.enableFlowLogs) {
       const logGroup = new cdk.aws_logs.LogGroup(this, 'VpcFlowLogsGroup', {
         logGroupName: `/aws/vpc/nfe-${config.environment}`,
-        retention: cdk.aws_logs.RetentionDays.ONE_WEEK,
+        retention: config.environment === 'prod'
+          ? cdk.aws_logs.RetentionDays.ONE_MONTH
+          : cdk.aws_logs.RetentionDays.ONE_DAY,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
 
@@ -138,61 +140,15 @@ export class NetworkStack extends cdk.Stack {
       'Allow RabbitMQ Management from ECS tasks'
     );
 
-    // ============================================
-    // VPC Endpoints (Serverless Mode)
-    // ============================================
-    // Quando natGateways = 0 (serverless), Lambda precisa de VPC Endpoints
-    // para acessar serviços AWS (EventBridge, SQS, etc) sem internet
+    // ==========================================
+    // VPC Endpoints (REMOVED FOR COST SAVINGS IN DEV)
+    // ==========================================
+    // Economy: $21.90/month (3 Interface Endpoints)
+    // Lambdas moved OUT of VPC → no longer need endpoints
+    // Kept only S3 Gateway Endpoint (FREE)
+
     if (config.vpc.natGateways === 0) {
-      // Security Group para VPC Endpoints
-      const vpcEndpointSecurityGroup = new ec2.SecurityGroup(this, 'VpcEndpointSecurityGroup', {
-        vpc: this.vpc,
-        securityGroupName: `nfe-vpce-sg-${config.environment}`,
-        description: 'Security group for VPC Endpoints',
-        allowAllOutbound: false,
-      });
-
-      // Allow HTTPS from Lambda/ECS Security Group
-      vpcEndpointSecurityGroup.addIngressRule(
-        this.ecsSecurityGroup,
-        ec2.Port.tcp(443),
-        'Allow HTTPS from Lambda/ECS to VPC Endpoints'
-      );
-
-      // VPC Endpoint: EventBridge
-      const eventBridgeEndpoint = new ec2.InterfaceVpcEndpoint(this, 'EventBridgeEndpoint', {
-        vpc: this.vpc,
-        service: ec2.InterfaceVpcEndpointAwsService.EVENTBRIDGE,
-        subnets: {
-          subnetType: ec2.SubnetType.PUBLIC, // Lambda está em public subnet
-        },
-        securityGroups: [vpcEndpointSecurityGroup],
-        privateDnsEnabled: true,
-      });
-
-      // VPC Endpoint: SQS
-      const sqsEndpoint = new ec2.InterfaceVpcEndpoint(this, 'SqsEndpoint', {
-        vpc: this.vpc,
-        service: ec2.InterfaceVpcEndpointAwsService.SQS,
-        subnets: {
-          subnetType: ec2.SubnetType.PUBLIC,
-        },
-        securityGroups: [vpcEndpointSecurityGroup],
-        privateDnsEnabled: true,
-      });
-
-      // VPC Endpoint: Secrets Manager (opcional, mas útil)
-      const secretsManagerEndpoint = new ec2.InterfaceVpcEndpoint(this, 'SecretsManagerEndpoint', {
-        vpc: this.vpc,
-        service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
-        subnets: {
-          subnetType: ec2.SubnetType.PUBLIC,
-        },
-        securityGroups: [vpcEndpointSecurityGroup],
-        privateDnsEnabled: true,
-      });
-
-      // VPC Gateway Endpoint: S3 (FREE - sem custo adicional)
+      // S3 Gateway Endpoint (FREE - always keep)
       const s3Endpoint = this.vpc.addGatewayEndpoint('S3Endpoint', {
         service: ec2.GatewayVpcEndpointAwsService.S3,
         subnets: [
@@ -202,15 +158,37 @@ export class NetworkStack extends cdk.Stack {
         ],
       });
 
-      // Output: VPC Endpoints
-      new cdk.CfnOutput(this, 'VpcEndpoints', {
-        value: JSON.stringify({
-          eventBridge: eventBridgeEndpoint.vpcEndpointId,
-          sqs: sqsEndpoint.vpcEndpointId,
-          secretsManager: secretsManagerEndpoint.vpcEndpointId,
-          s3: s3Endpoint.vpcEndpointId,
-        }),
-        description: 'VPC Endpoint IDs for Serverless Mode (NAT Gateway = 0)',
+      /* REMOVED FOR COST SAVINGS IN DEV (Lambdas moved out of VPC)
+
+      // EventBridge Endpoint ($7.30/month) - REMOVED
+      const eventBridgeEndpoint = new ec2.InterfaceVpcEndpoint(this, 'EventBridgeEndpoint', {
+        vpc: this.vpc,
+        service: ec2.InterfaceVpcEndpointAwsService.EVENTBRIDGE,
+        subnets: { subnetType: ec2.SubnetType.PUBLIC },
+        privateDnsEnabled: true,
+      });
+
+      // SQS Endpoint ($7.30/month) - REMOVED
+      const sqsEndpoint = new ec2.InterfaceVpcEndpoint(this, 'SqsEndpoint', {
+        vpc: this.vpc,
+        service: ec2.InterfaceVpcEndpointAwsService.SQS,
+        subnets: { subnetType: ec2.SubnetType.PUBLIC },
+        privateDnsEnabled: true,
+      });
+
+      // Secrets Manager Endpoint ($7.30/month) - REMOVED
+      const secretsManagerEndpoint = new ec2.InterfaceVpcEndpoint(this, 'SecretsManagerEndpoint', {
+        vpc: this.vpc,
+        service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
+        subnets: { subnetType: ec2.SubnetType.PUBLIC },
+        privateDnsEnabled: true,
+      });
+
+      */
+
+      new cdk.CfnOutput(this, 'VpcEndpointsInfo', {
+        value: 'Only S3 Gateway Endpoint (FREE). Interface Endpoints removed for cost savings.',
+        description: 'VPC Endpoints Configuration',
       });
     }
 
