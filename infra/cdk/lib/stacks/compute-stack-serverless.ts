@@ -3,7 +3,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -15,9 +15,8 @@ import { InfraConfig } from '../config/dev';
 export interface ComputeStackServerlessProps extends cdk.StackProps {
   config: InfraConfig;
   vpc: ec2.IVpc;
-  dbSecurityGroup: ec2.ISecurityGroup;
-  dbSecret: secretsmanager.Secret;
-  rdsProxyEndpoint: string; // Na verdade é dbEndpoint direto (sem Proxy)
+  mainTable: dynamodb.Table;
+  eventsTable: dynamodb.Table;
   eventBus: events.EventBus;
   userPoolId?: string; // Cognito User Pool ID (opcional para backward compatibility)
   userPoolClientId?: string; // Cognito User Pool Client ID
@@ -26,18 +25,17 @@ export interface ComputeStackServerlessProps extends cdk.StackProps {
 }
 
 /**
- * ComputeStackServerless: Arquitetura Lambda FREE TIER otimizada
+ * ComputeStackServerless: Arquitetura Lambda + DynamoDB 100% FREE TIER
  *
  * Premissas:
- * - Lambda EM VPC (subnets públicas, SEM NAT Gateway para internet)
- * - Lambda acessa apenas RDS via VPC (sem necessidade de internet)
- * - RDS em VPC com Security Group permitindo Lambda
+ * - Lambda SEM VPC (acesso direto ao DynamoDB via AWS PrivateLink)
+ * - DynamoDB com PAY_PER_REQUEST (Free Tier: 25 GB + 25 WCU/RCU)
  * - API Gateway Regional (não privado)
  * - EventBridge + SQS para saga coreografado
- * - Lambda conecta DIRETO no RDS (sem Proxy - Free Tier)
+ * - SEM RDS, SEM NAT Gateway, SEM VPC endpoints
  *
- * Custo estimado Free Tier: ~$3/mês
- * Custo após Free Tier: ~$33/mês
+ * Custo estimado Free Tier: ~$0-2/mês
+ * Custo após Free Tier: ~$15/mês
  */
 export class ComputeStackServerless extends cdk.Stack {
   public readonly apiFaturamento: apigateway.RestApi;
@@ -49,7 +47,7 @@ export class ComputeStackServerless extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ComputeStackServerlessProps) {
     super(scope, id, props);
 
-    const { config, vpc, dbSecurityGroup, dbSecret, rdsProxyEndpoint, eventBus, userPoolId, userPoolClientId, frontendBucketName, cloudFrontDomain } = props;
+    const { config, vpc, mainTable, eventsTable, eventBus, userPoolId, userPoolClientId, frontendBucketName, cloudFrontDomain } = props;
 
     // ===========================
     // 1. SQS Queues (Mensageria)
@@ -98,8 +96,9 @@ export class ComputeStackServerless extends cdk.Stack {
       ],
     });
 
-    // Grant Secrets Manager read (Lambda usa username/password do Secret)
-    dbSecret.grantRead(lambdaRole);
+    // Grant DynamoDB read/write permissions
+    mainTable.grantReadWriteData(lambdaRole);
+    eventsTable.grantReadWriteData(lambdaRole);
 
     // Grant SQS send/receive
     estoqueReservaQueue.grantSendMessages(lambdaRole);
@@ -118,6 +117,13 @@ export class ComputeStackServerless extends cdk.Stack {
         resources: [`arn:aws:s3:::${frontendBucketName}/notas-fiscais/*`],
       }));
     }
+
+    // Grant S3 write para PDF bucket
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:PutObject', 's3:PutObjectAcl'],
+      resources: ['arn:aws:s3:::nfe-pdfs-mock/*'],
+    }));
 
     // Security Group REMOVED: Lambdas no longer run in VPC (cost savings)
 
@@ -209,18 +215,12 @@ export class ComputeStackServerless extends cdk.Stack {
       environment: {
         ENVIRONMENT: config.environment,
         LOG_LEVEL: 'INFO',
-        CODE_VERSION: '2026-01-29-finops', // FinOps: Lambda moved OUT of VPC
-        DB_HOST: rdsProxyEndpoint,
-        DB_PORT: '5432',
-        DB_USER: dbSecret.secretValueFromJson('username').unsafeUnwrap(),
-        DB_PASSWORD: dbSecret.secretValueFromJson('password').unsafeUnwrap(),
-        DB_NAME: 'nfe_db',
-        DB_SCHEMA: 'faturamento',
-        DB_SSLMODE: 'require',
-        RABBITMQ_URL: 'disabled', // Desabilita RabbitMQ (usamos EventBridge)
+        CODE_VERSION: '2026-02-03-dynamodb', // DynamoDB migration
+        DYNAMODB_TABLE_NAME: mainTable.tableName,
+        DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
         SQS_ESTOQUE_RESERVA_URL: estoqueReservaQueue.queueUrl,
-        CORS_ORIGINS: config.cloudFrontDomain || '*',
+        CORS_ORIGINS: cloudFrontDomain ? `https://${cloudFrontDomain}` : 'http://localhost:4200',
       },
       // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
       // RDS is publicly accessible with restricted Security Group
@@ -240,9 +240,9 @@ export class ComputeStackServerless extends cdk.Stack {
       functionName: `nfe-estoque-${config.environment}`,
       runtime: lambda.Runtime.DOTNET_8, // .NET 8 managed runtime
       handler: 'ServicoEstoque', // Assembly name
-      code: lambda.Code.fromAsset('../../servico-estoque/publish-clean', {
-        // NOTA: .NET 8 managed runtime DLLs (11MB - downgrade de .NET 9)
-        // Rollback para runtime compatível com Lambda DOTNET_8
+      code: lambda.Code.fromAsset('../../servico-estoque/publish-dynamodb', {
+        // NOTA: .NET 8 managed runtime DLLs with DynamoDB SDK
+        // DynamoDB migration - no EF Core dependencies
       }),
       architecture: lambda.Architecture.X86_64, // DOTNET_8 usa x86_64
       memorySize: 512,
@@ -251,12 +251,11 @@ export class ComputeStackServerless extends cdk.Stack {
       logGroup: estoqueLogGroup,
       environment: {
         ASPNETCORE_ENVIRONMENT: 'Production',
-        ConnectionStrings__DefaultConnection: `Host=${rdsProxyEndpoint};Port=5432;Database=nfe_db;Username=${dbSecret.secretValueFromJson('username').unsafeUnwrap()};Password=${dbSecret.secretValueFromJson('password').unsafeUnwrap()};SSL Mode=Require;Search Path=estoque`,
-        DB_SCHEMA: 'estoque', // Schema do banco de dados (usado no EF Core OnModelCreating)
-        RABBITMQ_URL: 'disabled', // Desabilita RabbitMQ (usamos EventBridge)
+        DYNAMODB_TABLE_NAME: mainTable.tableName,
+        DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
         SQS_FATURAMENTO_CONFIRMACAO_URL: faturamentoConfirmacaoQueue.queueUrl,
-        CORS_ORIGINS: config.cloudFrontDomain || '*',
+        CORS_ORIGINS: cloudFrontDomain ? `https://${cloudFrontDomain}` : 'http://localhost:4200',
         DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1', // Otimização .NET
       },
       // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
@@ -299,13 +298,8 @@ export class ComputeStackServerless extends cdk.Stack {
       environment: {
         ENVIRONMENT: config.environment,
         LOG_LEVEL: 'INFO',
-        DB_HOST: rdsProxyEndpoint,
-        DB_PORT: '5432',
-        DB_USER: dbSecret.secretValueFromJson('username').unsafeUnwrap(),
-        DB_PASSWORD: dbSecret.secretValueFromJson('password').unsafeUnwrap(),
-        DB_NAME: 'nfe_db',
-        DB_SCHEMA: 'faturamento',
-        DB_SSLMODE: 'require',
+        DYNAMODB_TABLE_NAME: mainTable.tableName,
+        DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
       },
       // VPC REMOVED: Lambda now runs outside VPC
@@ -341,13 +335,8 @@ export class ComputeStackServerless extends cdk.Stack {
       environment: {
         ENVIRONMENT: config.environment,
         LOG_LEVEL: 'INFO',
-        DB_HOST: rdsProxyEndpoint,
-        DB_PORT: '5432',
-        DB_USER: dbSecret.secretValueFromJson('username').unsafeUnwrap(),
-        DB_PASSWORD: dbSecret.secretValueFromJson('password').unsafeUnwrap(),
-        DB_NAME: 'nfe_db',
-        DB_SCHEMA: 'faturamento',
-        DB_SSLMODE: 'require',
+        DYNAMODB_TABLE_NAME: mainTable.tableName,
+        DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         PDF_BUCKET_NAME: frontendBucketName || `nfe-frontend-${config.environment}-${cdk.Aws.ACCOUNT_ID}`,
         CLOUDFRONT_DOMAIN: cloudFrontDomain || config.cloudFrontDomain || '',
       },
@@ -385,7 +374,7 @@ export class ComputeStackServerless extends cdk.Stack {
         // SECURITY: CORS restrito ao domínio específico do frontend
         allowOrigins: config.environment === 'prod'
           ? ['https://nfe.meudominio.com']  // Produção: domínio customizado
-          : ['https://d3065hze06690c.cloudfront.net'],  // Dev: CloudFront específico
+          : ['https://d19fn3hv30xsoq.cloudfront.net'],  // Dev: CloudFront específico (updated 2026-02-04)
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key'],
         maxAge: cdk.Duration.hours(1),
@@ -474,7 +463,7 @@ export class ComputeStackServerless extends cdk.Stack {
         // SECURITY: CORS restrito ao domínio específico do frontend
         allowOrigins: config.environment === 'prod'
           ? ['https://nfe.meudominio.com']  // Produção: domínio customizado
-          : ['https://d3065hze06690c.cloudfront.net'],  // Dev: CloudFront específico
+          : ['https://d19fn3hv30xsoq.cloudfront.net'],  // Dev: CloudFront específico (updated 2026-02-04)
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key'],
         maxAge: cdk.Duration.hours(1),
@@ -601,8 +590,10 @@ export class ComputeStackServerless extends cdk.Stack {
     // ===========================
     // 7. Custom Resource: Cleanup Orphaned Log Groups
     // ===========================
-
-    // Lambda function to set retention policy on orphaned log groups
+    // DISABLED: Custom resource was causing deployment timeouts
+    // This is not critical for app functionality - just maintenance code
+    // Can be manually run later if needed
+    /*
     const cleanupLogsFunction = new lambda.Function(this, 'CleanupLogsFunction', {
       functionName: `nfe-cleanup-logs-${config.environment}`,
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -652,6 +643,7 @@ def handler(event, context):
     new cdk.CustomResource(this, 'CleanupLogsResource', {
       serviceToken: cleanupLogsFunction.functionArn,
     });
+    */
 
     // Tags
     Object.entries(config.tags).forEach(([key, value]) => {

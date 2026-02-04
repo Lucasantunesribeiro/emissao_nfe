@@ -54,6 +54,9 @@ build/
 build-*/
 dist/
 vendor/
+bootstrap
+bootstrap.*
+upx-*
 
 # ==============================================
 # CDK
@@ -125,9 +128,13 @@ response.json
 test-*.ps1
 temp-*.ps1
 aliases.ps1
+demo.ps1
+validar-sistema.ps1
+*rollback*.ps1
+*.component.ts.backup
 
 # ==============================================
-# Documentação temporária
+# Documentação temporária/histórica (não essencial)
 # ==============================================
 *_STATUS.md
 *_FIX_*.md
@@ -137,6 +144,29 @@ AUDITORIA_*.md
 OTIMIZACAO_*.md
 DEPLOY_COMPLETO_*.md
 CORS_FIX_*.md
+COST_REPORT.md
+COST_OPTIMIZATION_SUMMARY.md
+FINOPS_OPERATION_COMPLETE.md
+FASE-1-KILL-SWITCH-COMPLETO.md
+COST_DOCS_INDEX.md
+QUICK_START_COST.md
+COST_CONTROL_RUNBOOK.md
+COST_DASHBOARD.md
+ROLLBACK_PLAN.md
+SMOKE_TESTS.md
+REPOSITORY_CLEANUP_SUMMARY.md
+**/ARCHITECTURE_DIAGRAM.md
+**/COMPARISON_ECS_VS_LAMBDA.md
+**/COST_ESTIMATE.md
+**/MIGRATION_GUIDE.md
+**/PRE_DEPLOY_CHECKLIST.md
+**/CDK_COST_OPTIMIZATION_CHANGES.md
+**/CONFIGURACAO_AWS_MCP.md
+**/ARQUITETURA-KILL-SWITCH.md
+**/README-KILL-SWITCH.md
+**/CHECKLIST.md
+**/COMANDOS_DEPLOY.md
+**/DEPLOY.md
 
 # ==============================================
 # Backups
@@ -160,3 +190,5 @@ run-with-go.ps1
 !.gitignore
 !README.md
 !LICENSE
+
+.claude/

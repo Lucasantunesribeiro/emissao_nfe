@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,60 +13,84 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 
-	// Importar packages do próprio serviço
-	appConfig "servico-faturamento/internal/config"
 	"servico-faturamento/internal/dominio"
 	"servico-faturamento/internal/logger"
-	"servico-faturamento/internal/manipulador"
-	"servico-faturamento/internal/publicador"
-
-	"github.com/google/uuid"
-	"gorm.io/gorm"
+	"servico-faturamento/internal/pdf"
+	"servico-faturamento/internal/repositorio"
 )
 
-// LambdaHandler é o handler principal do Lambda que recebe requests do API Gateway
+// LambdaHandler is the main Lambda handler using DynamoDB
 type LambdaHandler struct {
-	handlers *manipulador.Handlers
+	repo        *repositorio.RepositorioDynamoDB
+	s3Client    *s3.Client
+	pdfGenerator *pdf.GeradorPDF
+	bucketName  string
 }
 
+// NewLambdaHandler creates a new Lambda handler with DynamoDB
 func NewLambdaHandler() (*LambdaHandler, error) {
 	// Initialize logger
 	logger.Init()
-	slog.Info("Initializing Lambda handler")
+	slog.Info("Initializing Lambda handler with DynamoDB")
 
-	// Initialize database connection using existing config
-	db, err := appConfig.InicializarDB()
+	// Get table names from environment
+	mainTableName := os.Getenv("DYNAMODB_TABLE_NAME")
+	eventsTableName := os.Getenv("DYNAMODB_EVENTS_TABLE_NAME")
+
+	if mainTableName == "" || eventsTableName == "" {
+		return nil, fmt.Errorf("DYNAMODB_TABLE_NAME and DYNAMODB_EVENTS_TABLE_NAME are required")
+	}
+
+	// Initialize AWS SDK config
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Initialize handlers
-	handlers := &manipulador.Handlers{DB: db}
+	// Create DynamoDB client
+	ddbClient := dynamodb.NewFromConfig(cfg)
 
-	// Initialize EventBridge publisher (for serverless mode)
-	if err := publicador.InicializarEventBridge(); err != nil {
-		slog.Error("Failed to initialize EventBridge", "error", err)
-		// Don't fail, just log
+	// Create S3 client
+	s3Client := s3.NewFromConfig(cfg)
+
+	// Create repository
+	repo := repositorio.NewRepositorioDynamoDB(ddbClient, mainTableName, eventsTableName)
+
+	// Create PDF generator
+	pdfGenerator := pdf.NewGeradorPDF()
+
+	// Get S3 bucket name
+	bucketName := os.Getenv("PDF_BUCKET_NAME")
+	if bucketName == "" {
+		bucketName = "nfe-pdfs-mock" // default
 	}
 
-	// Initialize outbox publisher (RabbitMQ - disabled in serverless)
-	if err := publicador.IniciarPublicador(db); err != nil {
-		slog.Error("Failed to start outbox publisher", "error", err)
-		// Don't fail, just log
-	}
+	slog.Info("Lambda handler initialized successfully",
+		"mainTable", mainTableName,
+		"eventsTable", eventsTableName,
+		"pdfBucket", bucketName)
 
 	return &LambdaHandler{
-		handlers: handlers,
+		repo:         repo,
+		s3Client:     s3Client,
+		pdfGenerator: pdfGenerator,
+		bucketName:   bucketName,
 	}, nil
 }
 
-// HandleRequest é chamado pelo AWS Lambda para cada invocação
+// HandleRequest is called by AWS Lambda for each invocation
 func (h *LambdaHandler) HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	slog.Info("Lambda invoked", "method", request.HTTPMethod, "path", request.Path)
 
 	origin := getHeaderValue(request.Headers, "Origin")
 
+	// Handle OPTIONS for CORS
 	if request.HTTPMethod == "OPTIONS" {
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusNoContent,
@@ -76,31 +100,30 @@ func (h *LambdaHandler) HandleRequest(ctx context.Context, request events.APIGat
 	}
 
 	// Health check
-	if request.Path == "/health" && request.HTTPMethod == "GET" {
+	if (request.Path == "/health" || request.Path == "/api/v1/health") && request.HTTPMethod == "GET" {
 		return h.handleHealthCheck(ctx, origin)
 	}
 
-	// Router baseado em path e method
+	// Router based on path and method
 	switch {
 	case strings.HasPrefix(request.Path, "/api/v1/notas"):
 		return h.handleNotasRoutes(ctx, request, origin)
 	case strings.HasPrefix(request.Path, "/api/v1/solicitacoes-impressao"):
-		return h.handleSolicitacoesRoutes(ctx, request, origin)
+		return h.handleSolicitacoesImpressaoRoutes(ctx, request, origin)
 	default:
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusNotFound,
 			Headers:    corsHeaders(origin),
-			Body:       `{"erro":"Not Found","message":"Not Found"}`,
+			Body:       `{"erro":"Not Found"}`,
 		}, nil
 	}
 }
 
 func (h *LambdaHandler) handleHealthCheck(ctx context.Context, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
 		Headers:    corsHeaders(origin),
-		Body:       `{"status":"healthy","service":"faturamento","version":"1.0.0"}`,
+		Body:       `{"status":"healthy","service":"faturamento","database":"dynamodb","version":"2.0.0"}`,
 	}, nil
 }
 
@@ -141,185 +164,100 @@ func (h *LambdaHandler) handleNotasRoutes(ctx context.Context, request events.AP
 		if subresource == "fechar" {
 			return h.handleFecharNota(ctx, notaID, origin)
 		}
-		return h.handleUpdateNota(ctx, notaID, request, origin)
+		return errorResponse(http.StatusNotFound, "Rota não encontrada", origin), nil
 
 	default:
 		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed", origin), nil
 	}
 }
 
-func (h *LambdaHandler) handleGetNota(ctx context.Context, notaID string, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	var nota dominio.NotaFiscal
-
-	if err := h.handlers.DB.Preload("Itens").First(&nota, "id = ?", notaID).Error; err != nil {
-		slog.Error("Error getting nota", "error", err, "id", notaID)
-		return errorResponse(http.StatusNotFound, "Nota not found", origin), nil
-	}
-
-	return jsonResponse(http.StatusOK, nota, origin), nil
-}
-
-func (h *LambdaHandler) handleListNotas(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	var notas []dominio.NotaFiscal
-
-	query := h.handlers.DB.Preload("Itens")
-
-	if status := request.QueryStringParameters["status"]; status != "" {
-		query = query.Where("status = ?", status)
-	}
-
-	if err := query.Find(&notas).Error; err != nil {
-		slog.Error("Error listing notas", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Failed to list notas", origin), nil
-	}
-
-	return jsonResponse(http.StatusOK, notas, origin), nil
-}
-
 func (h *LambdaHandler) handleCreateNota(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
 	var req struct {
-		Numero   string `json:"numero"`
-		Cliente  string `json:"cliente"`
-		Produtos []struct {
-			SKU            string  `json:"sku"`
-			Quantidade     int     `json:"quantidade"`
-			PrecoUnitario  float64 `json:"precoUnitario"`
-		} `json:"produtos"`
+		Numero string `json:"numero"`
 	}
 
 	if err := json.Unmarshal([]byte(request.Body), &req); err != nil {
-		return errorResponse(http.StatusBadRequest, "Invalid JSON", origin), nil
+		return errorResponse(http.StatusBadRequest, "Invalid JSON: "+err.Error(), origin), nil
 	}
 
-	if strings.TrimSpace(req.Numero) == "" {
-		return errorResponse(http.StatusBadRequest, "Numero obrigatório", origin), nil
+	if req.Numero == "" {
+		return errorResponse(http.StatusBadRequest, "Campo 'numero' é obrigatório", origin), nil
 	}
 
-	nota := dominio.NotaFiscal{
+	// Check if numero already exists
+	existingNota, err := h.repo.BuscarPorNumero(ctx, req.Numero)
+	if err != nil {
+		slog.Error("Error checking existing nota", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao verificar nota existente", origin), nil
+	}
+	if existingNota != nil {
+		return errorResponse(http.StatusConflict, "Número de nota já existe", origin), nil
+	}
+
+	nota := &dominio.NotaFiscal{
+		ID:     uuid.New(),
 		Numero: req.Numero,
 		Status: dominio.StatusNotaAberta,
 	}
 
-	if err := h.handlers.DB.Create(&nota).Error; err != nil {
+	if err := h.repo.CriarNota(ctx, nota); err != nil {
 		slog.Error("Error creating nota", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Failed to create nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Falha ao criar nota", origin), nil
 	}
 
-	// Se produtos foram enviados, publicar evento para reserva de estoque
-	if len(req.Produtos) > 0 {
-		type itemEvento struct {
-			SKU        string `json:"sku"`
-			Quantidade int    `json:"quantidade"`
-		}
-
-		type payloadEvento struct {
-			NotaID  string       `json:"notaId"`
-			Cliente string       `json:"cliente"`
-			Itens   []itemEvento `json:"itens"`
-		}
-
-		var itensEvento []itemEvento
-		for _, prod := range req.Produtos {
-			itensEvento = append(itensEvento, itemEvento{
-				SKU:        prod.SKU,
-				Quantidade: prod.Quantidade,
-			})
-		}
-
-		payload := payloadEvento{
-			NotaID:  nota.ID.String(),
-			Cliente: req.Cliente,
-			Itens:   itensEvento,
-		}
-
-		if err := publicador.PublicarEvento(ctx, "NotaFiscalCriada", nota.ID.String(), payload); err != nil {
-			slog.Warn("Failed to publish event to EventBridge", "error", err, "notaId", nota.ID)
-		} else {
-			slog.Info("Event published to EventBridge", "eventType", "NotaFiscalCriada", "notaId", nota.ID)
-		}
-	}
-
-	return jsonResponse(http.StatusCreated, nota, origin), nil
+	body, _ := json.Marshal(nota)
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusCreated,
+		Headers:    corsHeaders(origin),
+		Body:       string(body),
+	}, nil
 }
 
-func (h *LambdaHandler) handleUpdateNota(ctx context.Context, notaID string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	var nota dominio.NotaFiscal
-
-	if err := json.Unmarshal([]byte(request.Body), &nota); err != nil {
-		return errorResponse(http.StatusBadRequest, "Invalid JSON", origin), nil
-	}
-
-	if err := h.handlers.DB.Model(&nota).Where("id = ?", notaID).Updates(&nota).Error; err != nil {
-		slog.Error("Error updating nota", "error", err, "id", notaID)
-		return errorResponse(http.StatusInternalServerError, "Failed to update nota", origin), nil
-	}
-
-	return jsonResponse(http.StatusOK, nota, origin), nil
-}
-
-func (h *LambdaHandler) handleFecharNota(ctx context.Context, notaID string, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	id, err := uuid.Parse(notaID)
+func (h *LambdaHandler) handleGetNota(ctx context.Context, notaIDStr string, origin string) (events.APIGatewayProxyResponse, error) {
+	notaID, err := uuid.Parse(notaIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID invalido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
 	}
 
-	if err := h.handlers.FecharNota(id); err != nil {
-		errMsg := err.Error()
-		if errMsg == "nota deve ter status ABERTA para ser fechada" {
-			return errorResponse(http.StatusBadRequest, "Nota ja esta fechada ou com status invalido", origin), nil
-		}
-		if errMsg == "nota deve ter pelo menos 1 item para ser fechada" {
-			return errorResponse(http.StatusBadRequest, "Nota precisa ter itens antes de ser fechada", origin), nil
-		}
-		slog.Error("Error closing nota", "error", err, "id", notaID)
-		return errorResponse(http.StatusInternalServerError, "Falha ao fechar nota", origin), nil
-	}
-
-	return jsonResponse(http.StatusOK, map[string]string{"mensagem": "Nota fechada com sucesso"}, origin), nil
-}
-
-func (h *LambdaHandler) handleSolicitacoesRoutes(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	if request.HTTPMethod != "GET" {
-		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed", origin), nil
-	}
-
-	pathParts := strings.Split(strings.Trim(request.Path, "/"), "/")
-	if len(pathParts) < 4 {
-		return errorResponse(http.StatusBadRequest, "Solicitacao ID required", origin), nil
-	}
-
-	solicitacaoID := pathParts[3]
-	return h.handleConsultarStatusImpressao(ctx, solicitacaoID, origin)
-}
-
-func (h *LambdaHandler) handleConsultarStatusImpressao(ctx context.Context, solicitacaoID string, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	id, err := uuid.Parse(solicitacaoID)
+	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID invalido", origin), nil
+		slog.Error("Error fetching nota", "id", notaID, "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
 	}
 
-	var sol dominio.SolicitacaoImpressao
-	if err := h.handlers.DB.First(&sol, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errorResponse(http.StatusNotFound, "Solicitacao nao encontrada", origin), nil
-		}
-		return errorResponse(http.StatusInternalServerError, "Falha ao buscar solicitacao", origin), nil
+	if nota == nil {
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
 	}
 
-	return jsonResponse(http.StatusOK, sol, origin), nil
+	body, _ := json.Marshal(nota)
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers:    corsHeaders(origin),
+		Body:       string(body),
+	}, nil
 }
 
-func (h *LambdaHandler) handleAddItem(ctx context.Context, notaID string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
-	_ = ctx
-	notaUUID, err := uuid.Parse(notaID)
+func (h *LambdaHandler) handleListNotas(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+	// For now, list only open notas
+	// TODO: Add query parameter support for filtering by status
+	notas, err := h.repo.ListarNotasAbertas(ctx)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "Nota ID invalido", origin), nil
+		slog.Error("Error listing notas", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao listar notas", origin), nil
+	}
+
+	body, _ := json.Marshal(notas)
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers:    corsHeaders(origin),
+		Body:       string(body),
+	}, nil
+}
+
+func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+	notaID, err := uuid.Parse(notaIDStr)
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
 	}
 
 	var req struct {
@@ -332,225 +270,311 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaID string, reques
 		return errorResponse(http.StatusBadRequest, "Invalid JSON", origin), nil
 	}
 
-	if strings.TrimSpace(req.ProdutoID) == "" || req.Quantidade < 1 {
-		return errorResponse(http.StatusBadRequest, "ProdutoId e Quantidade sao obrigatorios", origin), nil
-	}
-
-	prodID, err := uuid.Parse(req.ProdutoID)
+	produtoID, err := uuid.Parse(req.ProdutoID)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ProdutoId invalido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ProdutoID inválido", origin), nil
 	}
 
-	if req.PrecoUnitario < 0 {
-		return errorResponse(http.StatusBadRequest, "Preco unitario invalido", origin), nil
+	if req.Quantidade <= 0 {
+		return errorResponse(http.StatusBadRequest, "Quantidade deve ser maior que zero", origin), nil
 	}
 
-	var nota dominio.NotaFiscal
-	if err := h.handlers.DB.First(&nota, "id = ?", notaUUID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errorResponse(http.StatusNotFound, "Nota nao encontrada", origin), nil
-		}
-		return errorResponse(http.StatusInternalServerError, "Falha ao buscar nota", origin), nil
+	if req.PrecoUnitario <= 0 {
+		return errorResponse(http.StatusBadRequest, "PrecoUnitario deve ser maior que zero", origin), nil
 	}
 
+	// Check if nota exists and is open
+	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
+	if err != nil {
+		slog.Error("Error fetching nota", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
+	}
+	if nota == nil {
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
+	}
 	if nota.Status != dominio.StatusNotaAberta {
-		return errorResponse(http.StatusConflict, "Nota nao esta aberta", origin), nil
+		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin), nil
 	}
 
-	item := dominio.ItemNota{
-		NotaID:        notaUUID,
-		ProdutoID:     prodID,
+	item := &dominio.ItemNota{
+		ID:            uuid.New(),
+		NotaID:        notaID,
+		ProdutoID:     produtoID,
 		Quantidade:    req.Quantidade,
 		PrecoUnitario: req.PrecoUnitario,
 	}
 
-	if err := h.handlers.DB.Create(&item).Error; err != nil {
+	if err := h.repo.AdicionarItem(ctx, item); err != nil {
+		slog.Error("Error adding item", "error", err)
 		return errorResponse(http.StatusInternalServerError, "Falha ao adicionar item", origin), nil
 	}
 
-	return jsonResponse(http.StatusCreated, item, origin), nil
+	body, _ := json.Marshal(item)
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusCreated,
+		Headers:    corsHeaders(origin),
+		Body:       string(body),
+	}, nil
 }
 
-func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaID string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
-	notaUUID, err := uuid.Parse(notaID)
+func (h *LambdaHandler) handleFecharNota(ctx context.Context, notaIDStr string, origin string) (events.APIGatewayProxyResponse, error) {
+	notaID, err := uuid.Parse(notaIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "Nota ID invalido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
 	}
 
-	chaveIdem := getHeaderValue(request.Headers, "Idempotency-Key")
-	if strings.TrimSpace(chaveIdem) == "" {
-		return errorResponse(http.StatusBadRequest, "Header Idempotency-Key obrigatorio", origin), nil
+	// Check if nota exists and is open
+	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
+	if err != nil {
+		slog.Error("Error fetching nota", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
 	}
-
-	var solExistente dominio.SolicitacaoImpressao
-	if err := h.handlers.DB.Where("chave_idempotencia = ?", chaveIdem).First(&solExistente).Error; err == nil {
-		return jsonResponse(http.StatusOK, solExistente, origin), nil
+	if nota == nil {
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
 	}
-
-	var nota dominio.NotaFiscal
-	if err := h.handlers.DB.First(&nota, "id = ?", notaUUID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errorResponse(http.StatusNotFound, "Nota nao encontrada", origin), nil
-		}
-		return errorResponse(http.StatusInternalServerError, "Falha ao buscar nota", origin), nil
-	}
-
 	if nota.Status != dominio.StatusNotaAberta {
-		return errorResponse(http.StatusConflict, "Nota nao esta aberta", origin), nil
+		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin), nil
+	}
+	if len(nota.Itens) == 0 {
+		return errorResponse(http.StatusBadRequest, "Nota sem itens não pode ser fechada", origin), nil
 	}
 
-	var itens []dominio.ItemNota
-	if err := h.handlers.DB.Where("nota_id = ?", notaUUID).Find(&itens).Error; err != nil {
-		return errorResponse(http.StatusInternalServerError, "Falha ao buscar itens", origin), nil
+	// Close nota (this will also create outbox event)
+	if err := h.repo.FecharNota(ctx, notaID); err != nil {
+		slog.Error("Error closing nota", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Falha ao fechar nota", origin), nil
 	}
 
-	if len(itens) == 0 {
-		return errorResponse(http.StatusConflict, "Nota sem itens nao pode ser impressa", origin), nil
-	}
-
-	err = h.handlers.DB.Transaction(func(tx *gorm.DB) error {
-		sol := dominio.SolicitacaoImpressao{
-			NotaID:            notaUUID,
-			Status:            "PENDENTE",
-			ChaveIdempotencia: chaveIdem,
-		}
-
-		if err := tx.Create(&sol).Error; err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) {
-				return nil
-			}
-			return err
-		}
-
-		type itemEvento struct {
-			ProdutoID  string `json:"produtoId"`
-			Quantidade int    `json:"quantidade"`
-		}
-
-		type payloadEvento struct {
-			NotaID string       `json:"notaId"`
-			Itens  []itemEvento `json:"itens"`
-		}
-
-		var itensEvento []itemEvento
-		for _, item := range itens {
-			itensEvento = append(itensEvento, itemEvento{
-				ProdutoID:  item.ProdutoID.String(),
-				Quantidade: item.Quantidade,
-			})
-		}
-
-		payload := payloadEvento{
-			NotaID: notaUUID.String(),
-			Itens:  itensEvento,
-		}
-
-		payloadJSON, err := json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("falha ao serializar payload: %w", err)
-		}
-
-		eventoOutbox := dominio.EventoOutbox{
-			TipoEvento:     "Faturamento.ImpressaoSolicitada",
-			IdAgregado:     notaUUID,
-			Payload:        string(payloadJSON),
-			DataOcorrencia: time.Now(),
-		}
-
-		if err := tx.Create(&eventoOutbox).Error; err != nil {
-			return fmt.Errorf("falha ao criar evento outbox: %w", err)
-		}
-
-		if err := publicador.PublicarEvento(ctx, eventoOutbox.TipoEvento, notaUUID.String(), payload); err != nil {
-			slog.Warn("Failed to publish event to EventBridge", "error", err)
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return errorResponse(http.StatusInternalServerError, "Falha ao processar impressao", origin), nil
-	}
-
-	var solCriada dominio.SolicitacaoImpressao
-	if err := h.handlers.DB.Where("chave_idempotencia = ?", chaveIdem).First(&solCriada).Error; err != nil {
-		return errorResponse(http.StatusInternalServerError, "Falha ao buscar solicitacao", origin), nil
-	}
-
-	return jsonResponse(http.StatusCreated, solCriada, origin), nil
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers:    corsHeaders(origin),
+		Body:       `{"message":"Nota fechada com sucesso"}`,
+	}, nil
 }
 
 // Helper functions
+func corsHeaders(origin string) map[string]string {
+	allowedOrigins := []string{
+		"http://localhost:4200",
+		"http://localhost:8080",
+	}
 
-func jsonResponse(statusCode int, body interface{}, origin string) events.APIGatewayProxyResponse {
-	jsonBody, _ := json.Marshal(body)
-	return events.APIGatewayProxyResponse{
-		StatusCode: statusCode,
-		Headers:    corsHeaders(origin),
-		Body:       string(jsonBody),
+	// Check if CloudFront domain
+	cloudFrontDomain := os.Getenv("CLOUDFRONT_DOMAIN")
+	if cloudFrontDomain != "" {
+		allowedOrigins = append(allowedOrigins, "https://"+cloudFrontDomain)
+	}
+
+	// Check if origin is allowed
+	allowOrigin := ""
+	for _, allowed := range allowedOrigins {
+		if origin == allowed || strings.HasSuffix(origin, ".cloudfront.net") {
+			allowOrigin = origin
+			break
+		}
+	}
+
+	if allowOrigin == "" {
+		allowOrigin = allowedOrigins[0] // Default fallback
+	}
+
+	return map[string]string{
+		"Content-Type":                 "application/json",
+		"Access-Control-Allow-Origin":  allowOrigin,
+		"Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+		"Access-Control-Allow-Headers": "Content-Type, Authorization, X-Idempotency-Key",
 	}
 }
 
 func errorResponse(statusCode int, message string, origin string) events.APIGatewayProxyResponse {
-	body := map[string]string{
-		"erro":    message,
-		"message": message,
-	}
-	jsonBody, _ := json.Marshal(body)
+	body, _ := json.Marshal(map[string]string{"erro": message})
 	return events.APIGatewayProxyResponse{
 		StatusCode: statusCode,
 		Headers:    corsHeaders(origin),
-		Body:       string(jsonBody),
+		Body:       string(body),
 	}
 }
 
-func corsHeaders(origin string) map[string]string {
-	return map[string]string{
-		"Content-Type":                 "application/json",
-		"Access-Control-Allow-Origin":  resolveCorsOrigin(origin),
-		"Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-		"Access-Control-Allow-Headers": "Content-Type,Authorization,X-Request-Id,Idempotency-Key",
+func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+	// Validate nota ID
+	notaID, err := uuid.Parse(notaIDStr)
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
+	}
+
+	// Get idempotency key from headers
+	chaveIdem := getHeaderValue(request.Headers, "Idempotency-Key")
+	if chaveIdem == "" {
+		return errorResponse(http.StatusBadRequest, "Header Idempotency-Key obrigatório", origin), nil
+	}
+
+	// Validate idempotency key format (8-256 alphanumeric chars)
+	if len(chaveIdem) < 8 || len(chaveIdem) > 256 {
+		return errorResponse(http.StatusBadRequest, "Idempotency-Key deve ter entre 8-256 caracteres", origin), nil
+	}
+
+	// Check if print request already exists (idempotency)
+	existingSol, err := h.repo.BuscarSolicitacaoPorChave(ctx, chaveIdem)
+	if err != nil {
+		slog.Error("Error checking existing print request", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao verificar solicitação existente", origin), nil
+	}
+	if existingSol != nil {
+		// Return existing request (idempotent)
+		body, _ := json.Marshal(existingSol)
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusOK,
+			Headers:    corsHeaders(origin),
+			Body:       string(body),
+		}, nil
+	}
+
+	// Get nota
+	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
+	if err != nil {
+		slog.Error("Error fetching nota", "id", notaID, "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
+	}
+	if nota == nil {
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
+	}
+
+	// Validate nota is open
+	if nota.Status != dominio.StatusNotaAberta {
+		return errorResponse(http.StatusConflict, "Nota não está aberta", origin), nil
+	}
+
+	// Check if nota has items
+	if len(nota.Itens) == 0 {
+		return errorResponse(http.StatusConflict, "Nota sem itens não pode ser impressa", origin), nil
+	}
+
+	// Generate PDF with nota data
+	pdfBytes, err := h.pdfGenerator.GerarNotaFiscal(nota)
+	if err != nil {
+		slog.Error("Error generating PDF", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao gerar PDF", origin), nil
+	}
+
+	// Upload PDF to S3
+	solID := uuid.New()
+	pdfKey := fmt.Sprintf("notas/%s/%s.pdf", notaID.String(), solID.String())
+
+	_, err = h.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(h.bucketName),
+		Key:         aws.String(pdfKey),
+		Body:        bytes.NewReader(pdfBytes),
+		ContentType: aws.String("application/pdf"),
+	})
+	if err != nil {
+		slog.Error("Error uploading PDF to S3", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao salvar PDF", origin), nil
+	}
+
+	// Create PDF URL
+	pdfURL := fmt.Sprintf("https://%s.s3.amazonaws.com/%s", h.bucketName, pdfKey)
+	now := time.Now()
+
+	sol := &dominio.SolicitacaoImpressao{
+		ID:                solID,
+		NotaID:            notaID,
+		Status:            "CONCLUIDA",
+		ChaveIdempotencia: chaveIdem,
+		PdfURL:            &pdfURL,
+		DataConclusao:     &now,
+	}
+
+	if err := h.repo.CriarSolicitacaoImpressao(ctx, sol); err != nil {
+		slog.Error("Error creating print request", "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao criar solicitação de impressão", origin), nil
+	}
+
+	// Publish event
+	type itemEvento struct {
+		ProdutoID  string `json:"produtoId"`
+		Quantidade int    `json:"quantidade"`
+	}
+	type payloadEvento struct {
+		NotaID string       `json:"notaId"`
+		Itens  []itemEvento `json:"itens"`
+	}
+
+	var itensEvento []itemEvento
+	for _, item := range nota.Itens {
+		itensEvento = append(itensEvento, itemEvento{
+			ProdutoID:  item.ProdutoID.String(),
+			Quantidade: item.Quantidade,
+		})
+	}
+
+	payload := payloadEvento{
+		NotaID: notaID.String(),
+		Itens:  itensEvento,
+	}
+
+	if err := h.repo.PublicarEvento(ctx, "Faturamento.ImpressaoSolicitada", notaID, payload); err != nil {
+		slog.Error("Error publishing event", "error", err)
+		// Don't fail the request if event publishing fails - the print request was created
+	}
+
+	body, _ := json.Marshal(sol)
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusCreated,
+		Headers:    corsHeaders(origin),
+		Body:       string(body),
+	}, nil
+}
+
+func (h *LambdaHandler) handleSolicitacoesImpressaoRoutes(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+	pathParts := strings.Split(strings.Trim(request.Path, "/"), "/")
+	var solID string
+	if len(pathParts) > 3 {
+		solID = pathParts[3]
+	}
+
+	switch request.HTTPMethod {
+	case "GET":
+		if solID != "" {
+			return h.handleGetSolicitacao(ctx, solID, origin)
+		}
+		return errorResponse(http.StatusNotFound, "Rota não encontrada", origin), nil
+
+	default:
+		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed", origin), nil
 	}
 }
 
-func resolveCorsOrigin(origin string) string {
-	corsOrigins := strings.TrimSpace(os.Getenv("CORS_ORIGINS"))
-	if corsOrigins == "" {
-		slog.Warn("SECURITY: CORS_ORIGINS não configurado. Bloqueando todas as origens.")
-		return ""
+func (h *LambdaHandler) handleGetSolicitacao(ctx context.Context, solIDStr string, origin string) (events.APIGatewayProxyResponse, error) {
+	solID, err := uuid.Parse(solIDStr)
+	if err != nil {
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
 	}
 
-	origins := strings.Split(corsOrigins, ",")
-	normalized := make([]string, 0, len(origins))
-	for _, entry := range origins {
-		value := strings.TrimSpace(entry)
-		if value != "" && value != "*" {
-			normalized = append(normalized, value)
-		}
+	sol, err := h.repo.BuscarSolicitacaoPorID(ctx, solID)
+	if err != nil {
+		slog.Error("Error fetching solicitacao", "id", solID, "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar solicitação", origin), nil
 	}
 
-	if len(normalized) == 0 {
-		slog.Warn("SECURITY: CORS_ORIGINS vazio ou contém apenas '*'. Bloqueando todas as origens.")
-		return ""
+	if sol == nil {
+		return errorResponse(http.StatusNotFound, "Solicitação não encontrada", origin), nil
 	}
 
-	// Validar origem contra lista permitida
-	for _, allowed := range normalized {
-		if strings.EqualFold(allowed, origin) {
-			return origin
-		}
-	}
-
-	// Origem não permitida
-	slog.Warn("SECURITY: Origem não permitida bloqueada", "origin", origin, "allowed", normalized)
-	return ""
+	body, _ := json.Marshal(sol)
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers:    corsHeaders(origin),
+		Body:       string(body),
+	}, nil
 }
 
 func getHeaderValue(headers map[string]string, key string) string {
-	for k, v := range headers {
-		if strings.EqualFold(k, key) {
-			return v
-		}
+	// Check both lowercase and proper case
+	if val, ok := headers[strings.ToLower(key)]; ok {
+		return val
+	}
+	if val, ok := headers[key]; ok {
+		return val
 	}
 	return ""
 }
@@ -562,6 +586,5 @@ func main() {
 		panic(err)
 	}
 
-	slog.Info("Lambda handler initialized successfully")
 	lambda.Start(handler.HandleRequest)
 }

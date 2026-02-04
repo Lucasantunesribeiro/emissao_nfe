@@ -1,7 +1,6 @@
 using System.Diagnostics;
-using Microsoft.EntityFrameworkCore;
-using RabbitMQ.Client;
-using ServicoEstoque.Infraestrutura.Persistencia;
+using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.Model;
 
 namespace ServicoEstoque.Api;
 
@@ -25,17 +24,14 @@ public static class HealthCheckEndpoint
     private static readonly DateTimeOffset StartTime = DateTimeOffset.UtcNow;
 
     public static async Task<IResult> HandleHealthCheck(
-        ContextoBancoDados contexto,
+        IAmazonDynamoDB dynamoDb,
         IConfiguration configuration,
         IHostEnvironment env)
     {
         var checks = new Dictionary<string, CheckResult>();
 
-        // Check Database
-        checks["database"] = await CheckDatabase(contexto);
-
-        // Check RabbitMQ
-        checks["rabbitmq"] = CheckRabbitMQ(configuration);
+        // Check DynamoDB
+        checks["dynamodb"] = await CheckDynamoDB(dynamoDb, configuration);
 
         var overallStatus = checks.Values.Any(c => c.Status == "fail") ? "unhealthy" : "healthy";
 
@@ -48,75 +44,38 @@ public static class HealthCheckEndpoint
             UptimeSeconds: (long)(DateTimeOffset.UtcNow - StartTime).TotalSeconds
         );
 
-        var statusCode = overallStatus == "healthy" ? 200 : 503;
-        return Results.Json(
-            response,
-            AppJsonSerializerContext.Default.HealthCheckResponse,
-            statusCode: statusCode);
+        return overallStatus == "healthy"
+            ? Results.Ok(response)
+            : Results.Json(response, statusCode: 503);
     }
 
-    private static async Task<CheckResult> CheckDatabase(ContextoBancoDados contexto)
+    private static async Task<CheckResult> CheckDynamoDB(IAmazonDynamoDB dynamoDb, IConfiguration configuration)
     {
-        var sw = Stopwatch.StartNew();
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await contexto.Database.ExecuteSqlRawAsync("SELECT 1", cts.Token);
+            var sw = Stopwatch.StartNew();
+            var tableName = configuration["DYNAMODB_TABLE_NAME"] ?? Environment.GetEnvironmentVariable("DYNAMODB_TABLE_NAME");
+
+            if (string.IsNullOrEmpty(tableName))
+            {
+                return new CheckResult("fail", Error: "DYNAMODB_TABLE_NAME not configured");
+            }
+
+            var request = new DescribeTableRequest
+            {
+                TableName = tableName
+            };
+
+            var response = await dynamoDb.DescribeTableAsync(request);
             sw.Stop();
-            return new CheckResult("ok", LatencyMs: sw.ElapsedMilliseconds);
+
+            return response.Table.TableStatus == TableStatus.ACTIVE
+                ? new CheckResult("pass", sw.ElapsedMilliseconds)
+                : new CheckResult("fail", sw.ElapsedMilliseconds, $"Table status: {response.Table.TableStatus}");
         }
         catch (Exception ex)
         {
             return new CheckResult("fail", Error: ex.Message);
         }
-    }
-
-    private static CheckResult CheckRabbitMQ(IConfiguration configuration)
-    {
-        // Se RABBITMQ_URL estiver vazio ou "disabled", pula verificação (Lambda/EventBridge)
-        var rabbitMqUrl = Environment.GetEnvironmentVariable("RABBITMQ_URL");
-        if (string.IsNullOrEmpty(rabbitMqUrl) || rabbitMqUrl == "disabled")
-        {
-            return new CheckResult("ok", Error: "rabbitmq disabled (using EventBridge)");
-        }
-
-        var sw = Stopwatch.StartNew();
-        try
-        {
-            var factory = CreateRabbitMQFactory(configuration);
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            using var conn = factory.CreateConnection();
-            sw.Stop();
-
-            return new CheckResult("ok", LatencyMs: sw.ElapsedMilliseconds);
-        }
-        catch (Exception ex)
-        {
-            return new CheckResult("fail", Error: ex.Message);
-        }
-    }
-
-    private static ConnectionFactory CreateRabbitMQFactory(IConfiguration configuration)
-    {
-        var host = configuration["RabbitMQ__Host"];
-        var port = int.Parse(configuration["RabbitMQ__Port"] ?? "5672");
-        var username = configuration["RabbitMQ__Username"];
-        var password = configuration["RabbitMQ__Password"];
-        var useSsl = bool.Parse(configuration["RabbitMQ__UseSsl"] ?? "false");
-
-        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
-        {
-            throw new InvalidOperationException("SECURITY: RabbitMQ credentials (Host, Username, Password) são obrigatórias via variáveis de ambiente.");
-        }
-
-        return new ConnectionFactory
-        {
-            HostName = host,
-            Port = port,
-            UserName = username,
-            Password = password,
-            Ssl = useSsl ? new SslOption { Enabled = true, ServerName = host } : new SslOption()
-        };
     }
 }

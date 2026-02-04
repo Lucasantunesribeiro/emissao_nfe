@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Mvc;
 using ServicoEstoque.Api.DTOs;
 using ServicoEstoque.Aplicacao.DTOs;
 using ServicoEstoque.Dominio.Entidades;
-using ServicoEstoque.Infraestrutura.Mensageria;
 
 namespace ServicoEstoque.Api;
 
@@ -26,8 +25,6 @@ namespace ServicoEstoque.Api;
 [JsonSerializable(typeof(ReservarEstoqueRequest))]
 [JsonSerializable(typeof(ValidationProblemDetails))]
 [JsonSerializable(typeof(ProblemDetails))]
-[JsonSerializable(typeof(EventoSolicitacaoImpressao))]
-[JsonSerializable(typeof(ItemEventoImpressao))]
 [JsonSerializable(typeof(EventoReservaItemPayload))]
 [JsonSerializable(typeof(EventoReservaSucessoPayload))]
 [JsonSerializable(typeof(EventoReservaRejeitadaPayload))]
