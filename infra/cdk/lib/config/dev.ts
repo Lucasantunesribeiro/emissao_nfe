@@ -81,7 +81,7 @@ export const devConfig = {
   },
 
   // CORS Configuration
-  cloudFrontDomain: 'https://d3065hze06690c.cloudfront.net',
+  cloudFrontDomain: 'https://d1gdw7rlsi8u42.cloudfront.net',
 
   // CloudWatch Alarms Configuration
   alarms: {
