@@ -118,9 +118,9 @@ export class FrontendStack extends cdk.Stack {
           contentSecurityPolicy: [
             "default-src 'self'",
             "script-src 'self' 'unsafe-inline'", // unsafe-inline necessário para Angular
-            "style-src 'self' 'unsafe-inline'",  // unsafe-inline necessário para Tailwind
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",  // Google Fonts CSS
             "img-src 'self' data: https:",
-            "font-src 'self' data:",
+            "font-src 'self' data: https://fonts.gstatic.com",  // Google Fonts arquivos
             `connect-src 'self' https://*.execute-api.${cdk.Aws.REGION}.amazonaws.com https://cognito-idp.${cdk.Aws.REGION}.amazonaws.com`,
             "frame-ancestors 'none'",
             "base-uri 'self'",

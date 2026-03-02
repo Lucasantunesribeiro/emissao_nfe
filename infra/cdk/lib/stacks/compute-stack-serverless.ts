@@ -114,7 +114,7 @@ export class ComputeStackServerless extends cdk.Stack {
       lambdaRole.addToPolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['s3:PutObject', 's3:PutObjectAcl'],
-        resources: [`arn:aws:s3:::${frontendBucketName}/notas-fiscais/*`],
+        resources: [`arn:aws:s3:::${frontendBucketName}/notas/*`],  // Corrigido: código usa "notas/{id}/{sol}.pdf"
       }));
     }
 
@@ -221,6 +221,8 @@ export class ComputeStackServerless extends cdk.Stack {
         EVENT_BUS_NAME: eventBus.eventBusName,
         SQS_ESTOQUE_RESERVA_URL: estoqueReservaQueue.queueUrl,
         CORS_ORIGINS: cloudFrontDomain ? `https://${cloudFrontDomain}` : 'http://localhost:4200',
+        PDF_BUCKET_NAME: frontendBucketName || `nfe-frontend-${config.environment}-${cdk.Aws.ACCOUNT_ID}`,
+        CLOUDFRONT_DOMAIN: cloudFrontDomain || '',
       },
       // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
       // RDS is publicly accessible with restricted Security Group
@@ -374,7 +376,7 @@ export class ComputeStackServerless extends cdk.Stack {
         // SECURITY: CORS restrito ao domínio específico do frontend
         allowOrigins: config.environment === 'prod'
           ? ['https://nfe.meudominio.com']  // Produção: domínio customizado
-          : ['https://d19fn3hv30xsoq.cloudfront.net'],  // Dev: CloudFront específico (updated 2026-02-04)
+          : [config.cloudFrontDomain, 'http://localhost:4200'],  // Dev: CloudFront do config (atualizar em dev.ts ao trocar conta)
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key'],
         maxAge: cdk.Duration.hours(1),
@@ -463,7 +465,7 @@ export class ComputeStackServerless extends cdk.Stack {
         // SECURITY: CORS restrito ao domínio específico do frontend
         allowOrigins: config.environment === 'prod'
           ? ['https://nfe.meudominio.com']  // Produção: domínio customizado
-          : ['https://d19fn3hv30xsoq.cloudfront.net'],  // Dev: CloudFront específico (updated 2026-02-04)
+          : [config.cloudFrontDomain, 'http://localhost:4200'],  // Dev: CloudFront do config (atualizar em dev.ts ao trocar conta)
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key'],
         maxAge: cdk.Duration.hours(1),
