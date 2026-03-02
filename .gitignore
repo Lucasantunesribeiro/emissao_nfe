@@ -26,6 +26,9 @@ yarn-error.log*
 # ==============================================
 bin/
 obj/
+
+# Exceção: CDK bin/ contém os entrypoints TypeScript (não são artefatos .NET)
+!infra/cdk/bin/
 publish/
 publish-*/
 *.user
