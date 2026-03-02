@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -539,6 +540,49 @@ func (r *RepositorioDynamoDB) PublicarEvento(ctx context.Context, tipoEvento str
 
 	slog.Info("Event published", "type", tipoEvento, "aggregateId", idAgregado)
 	return nil
+}
+
+// BuscarSaldoProduto reads the product stock directly from the shared DynamoDB table.
+// Returns (saldo, exists, error). Returns exists=false if product not found or inactive.
+func (r *RepositorioDynamoDB) BuscarSaldoProduto(ctx context.Context, produtoID uuid.UUID) (int, bool, error) {
+	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("PRODUTO#%s", produtoID.String())},
+			"SK": &types.AttributeValueMemberS{Value: "#METADATA"},
+		},
+		ProjectionExpression: aws.String("saldo, ativo"),
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("error fetching product: %w", err)
+	}
+
+	if result.Item == nil {
+		return 0, false, nil
+	}
+
+	if ativoAttr, ok := result.Item["ativo"]; ok {
+		if b, ok := ativoAttr.(*types.AttributeValueMemberBOOL); ok && !b.Value {
+			return 0, false, nil // inactive product
+		}
+	}
+
+	saldoAttr, ok := result.Item["saldo"]
+	if !ok {
+		return 0, true, nil
+	}
+
+	saldoNum, ok := saldoAttr.(*types.AttributeValueMemberN)
+	if !ok {
+		return 0, true, nil
+	}
+
+	saldo, err := strconv.Atoi(saldoNum.Value)
+	if err != nil {
+		return 0, true, fmt.Errorf("invalid saldo value: %w", err)
+	}
+
+	return saldo, true, nil
 }
 
 // BuscarSolicitacaoPorID finds a print request by ID
