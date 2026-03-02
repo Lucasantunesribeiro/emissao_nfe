@@ -1,310 +1,222 @@
-name: Deploy to Production
+name: Deploy – Production
 
 on:
-  workflow_dispatch: # Manual trigger only
+  workflow_dispatch:
     inputs:
       confirmation:
-        description: 'Type "DEPLOY-PROD" to confirm'
+        description: 'Digite "DEPLOY-PROD" para confirmar'
         required: true
         type: string
 
 env:
   AWS_REGION: us-east-1
-  ENVIRONMENT: prod
 
 jobs:
-  validate-input:
-    name: Validate Deployment Confirmation
+  # ─────────────────────────────────────────
+  # Gate – confirmação obrigatória
+  # ─────────────────────────────────────────
+  gate:
+    name: Validar confirmação
     runs-on: ubuntu-latest
     steps:
-      - name: Check confirmation
+      - name: Verificar confirmação
         run: |
           if [ "${{ github.event.inputs.confirmation }}" != "DEPLOY-PROD" ]; then
-            echo "❌ Invalid confirmation. Expected 'DEPLOY-PROD'"
+            echo "Confirmação inválida. Digite exatamente: DEPLOY-PROD"
             exit 1
           fi
-          echo "✅ Confirmation validated"
+          echo "Confirmação validada. Iniciando deploy para produção..."
 
-  build-and-push-images:
-    name: Build and Push Docker Images
+  # ─────────────────────────────────────────
+  # Go Lambdas – Faturamento, Outbox, PDF
+  # ─────────────────────────────────────────
+  deploy-faturamento:
+    name: Deploy Lambdas – Faturamento (Go)
     runs-on: ubuntu-latest
-    needs: validate-input
-    permissions:
-      id-token: write
-      contents: read
-
-    outputs:
-      faturamento-tag: ${{ steps.meta-faturamento.outputs.tags }}
-      estoque-tag: ${{ steps.meta-estoque.outputs.tags }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Build and Push: Faturamento (Go)
-      - name: Extract metadata (Faturamento)
-        id: meta-faturamento
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.login-ecr.outputs.registry }}/nfe-faturamento-prod
-          tags: |
-            type=sha,prefix=prod-
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
-      - name: Build and push Faturamento image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./servico-faturamento
-          file: ./servico-faturamento/Dockerfile
-          push: true
-          tags: ${{ steps.meta-faturamento.outputs.tags }}
-          labels: ${{ steps.meta-faturamento.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/arm64
-
-      # Build and Push: Estoque (.NET)
-      - name: Extract metadata (Estoque)
-        id: meta-estoque
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.login-ecr.outputs.registry }}/nfe-estoque-prod
-          tags: |
-            type=sha,prefix=prod-
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
-      - name: Build and push Estoque image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./servico-estoque
-          file: ./servico-estoque/Dockerfile
-          push: true
-          tags: ${{ steps.meta-estoque.outputs.tags }}
-          labels: ${{ steps.meta-estoque.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/arm64
-
-  deploy-infrastructure:
-    name: Deploy CDK Infrastructure
-    runs-on: ubuntu-latest
-    needs: build-and-push-images
-    permissions:
-      id-token: write
-      contents: read
-    environment:
-      name: production
-      url: https://${{ steps.outputs.outputs.cloudfront-url }}
-
+    needs: gate
     defaults:
       run:
-        working-directory: ./infra/cdk
+        working-directory: ./servico-faturamento
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: infra/cdk/package-lock.json
+          go-version-file: servico-faturamento/go.mod
+          cache-dependency-path: servico-faturamento/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build – Lambda principal
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags lambda.norpc -o build/bootstrap \
+            ./cmd/lambda/main.go
+
+      - name: Build – Lambda Outbox
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags lambda.norpc -o build-outbox/bootstrap \
+            ./cmd/lambda-outbox/main.go
+
+      - name: Build – Lambda PDF
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags lambda.norpc -o build-pdf/bootstrap \
+            ./cmd/lambda-pdf/main.go
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: CDK Diff (preview changes)
-        run: npm run diff:prod
-
-      - name: Deploy CDK stacks (with approval)
-        run: npm run deploy:prod
-
-      - name: Get stack outputs
-        id: outputs
+      - name: Deploy – nfe-faturamento-prod
         run: |
-          ALB_DNS=$(aws cloudformation describe-stacks \
-            --stack-name nfe-loadbalancer-prod \
-            --query 'Stacks[0].Outputs[?OutputKey==`AlbDnsName`].OutputValue' \
-            --output text)
-          echo "alb-dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          cd build && zip bootstrap.zip bootstrap
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_FATURAMENTO_PROD || 'nfe-faturamento-prod' }} \
+            --zip-file fileb://bootstrap.zip
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_FATURAMENTO_PROD || 'nfe-faturamento-prod' }}
 
-          CLOUDFRONT_URL=$(aws cloudformation describe-stacks \
-            --stack-name nfe-frontend-prod \
-            --query 'Stacks[0].Outputs[?OutputKey==`CloudFrontUrl`].OutputValue' \
-            --output text)
-          echo "cloudfront-url=$CLOUDFRONT_URL" >> $GITHUB_OUTPUT
-
-      - name: Update ECS services (gradual rollout)
+      - name: Deploy – nfe-outbox-processor-prod
         run: |
-          # Faturamento: rolling update
-          aws ecs update-service \
-            --cluster nfe-cluster-prod \
-            --service nfe-faturamento-prod \
-            --force-new-deployment \
-            --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+          cd build-outbox && zip bootstrap.zip bootstrap
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_OUTBOX_PROD || 'nfe-outbox-processor-prod' }} \
+            --zip-file fileb://bootstrap.zip
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_OUTBOX_PROD || 'nfe-outbox-processor-prod' }}
 
-          # Estoque: rolling update
-          aws ecs update-service \
-            --cluster nfe-cluster-prod \
-            --service nfe-estoque-prod \
-            --force-new-deployment \
-            --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
-
-      - name: Wait for service stability
+      - name: Deploy – nfe-pdf-generator-prod
         run: |
-          aws ecs wait services-stable \
-            --cluster nfe-cluster-prod \
-            --services nfe-faturamento-prod nfe-estoque-prod
+          cd build-pdf && zip bootstrap.zip bootstrap
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_PDF_PROD || 'nfe-pdf-generator-prod' }} \
+            --zip-file fileb://bootstrap.zip
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_PDF_PROD || 'nfe-pdf-generator-prod' }}
 
-    outputs:
-      alb-dns: ${{ steps.outputs.outputs.alb-dns }}
-      cloudfront-url: ${{ steps.outputs.outputs.cloudfront-url }}
-
-  deploy-frontend:
-    name: Deploy Frontend to S3
+  # ─────────────────────────────────────────
+  # .NET 8 Lambda – Estoque
+  # ─────────────────────────────────────────
+  deploy-estoque:
+    name: Deploy Lambda – Estoque (.NET 8)
     runs-on: ubuntu-latest
-    needs: deploy-infrastructure
-    permissions:
-      id-token: write
-      contents: read
+    needs: gate
+    defaults:
+      run:
+        working-directory: ./servico-estoque
 
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish (.NET 8 managed runtime – linux-x64)
+        run: |
+          dotnet publish ServicoEstoque.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o lambda-publish
+
+      - name: Create ZIP
+        run: |
+          cd lambda-publish
+          zip -r ../lambda-estoque.zip .
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy – nfe-estoque-prod
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_ESTOQUE_PROD || 'nfe-estoque-prod' }} \
+            --zip-file fileb://lambda-estoque.zip
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_ESTOQUE_PROD || 'nfe-estoque-prod' }}
+
+  # ─────────────────────────────────────────
+  # Angular – S3 + CloudFront
+  # ─────────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend – S3 + CloudFront
+    runs-on: ubuntu-latest
+    needs: gate
     defaults:
       run:
         working-directory: ./web-app
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: web-app/package-lock.json
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
-          aws-region: ${{ env.AWS_REGION }}
-
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Angular app (production)
+      - name: Build production
         run: npm run build:prod
-        env:
-          API_URL: http://${{ needs.deploy-infrastructure.outputs.alb-dns }}
 
-      - name: Get S3 bucket name
-        id: bucket
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync to S3
         run: |
-          BUCKET_NAME=$(aws cloudformation describe-stacks \
-            --stack-name nfe-frontend-prod \
-            --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
-            --output text)
-          echo "name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          aws s3 sync dist/web-app/ \
+            s3://${{ secrets.S3_BUCKET_PROD }} \
+            --delete
 
-      - name: Deploy to S3
-        run: aws s3 sync ./dist/web-app s3://${{ steps.bucket.outputs.name }}/ --delete
-
-      - name: Get CloudFront distribution ID
-        id: distribution
-        run: |
-          DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
-            --stack-name nfe-frontend-prod \
-            --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' \
-            --output text)
-          echo "id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
-
-      - name: Invalidate CloudFront cache
+      - name: Invalidate CloudFront
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ steps.distribution.outputs.id }} \
+            --distribution-id ${{ secrets.CLOUDFRONT_ID_PROD }} \
             --paths "/*"
 
-  smoke-tests:
-    name: Run Smoke Tests
+  # ─────────────────────────────────────────
+  # Health check – produção
+  # ─────────────────────────────────────────
+  health-check:
+    name: Health Check – Produção
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, deploy-frontend]
+    needs: [deploy-faturamento, deploy-estoque, deploy-frontend]
 
     steps:
-      - name: Wait for services to stabilize
-        run: sleep 60
-
-      - name: Smoke test - Faturamento health
+      - name: Health – Faturamento
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/faturamento/health)
-          if [ "$response" != "200" ]; then
-            echo "❌ Faturamento health check failed (HTTP $response)"
-            exit 1
-          fi
-          echo "✅ Faturamento health check passed"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            ${{ secrets.API_FATURAMENTO_URL_PROD }}/health)
+          echo "Faturamento health: $STATUS"
+          [ "$STATUS" = "200" ] || exit 1
 
-      - name: Smoke test - Estoque health
+      - name: Health – Estoque
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/estoque/health)
-          if [ "$response" != "200" ]; then
-            echo "❌ Estoque health check failed (HTTP $response)"
-            exit 1
-          fi
-          echo "✅ Estoque health check passed"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            ${{ secrets.API_ESTOQUE_URL_PROD }}/health)
+          echo "Estoque health: $STATUS"
+          [ "$STATUS" = "200" ] || exit 1
 
-      - name: Smoke test - Frontend
+      - name: Summary
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ needs.deploy-infrastructure.outputs.cloudfront-url }})
-          if [ "$response" != "200" ]; then
-            echo "❌ Frontend smoke test failed (HTTP $response)"
-            exit 1
-          fi
-          echo "✅ Frontend smoke test passed"
-
-      - name: Smoke test - API integration
-        run: |
-          # Test basic API endpoint
-          curl -f http://${{ needs.deploy-infrastructure.outputs.alb-dns }}/api/faturamento/health || exit 1
-          echo "✅ API integration test passed"
-
-  notify:
-    name: Send Production Deployment Notification
-    runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, deploy-frontend, smoke-tests]
-    if: always()
-
-    steps:
-      - name: Deployment status
-        run: |
-          if [ "${{ needs.smoke-tests.result }}" == "success" ]; then
-            echo "🎉 PRODUCTION DEPLOYMENT SUCCESSFUL!"
-            echo "ALB: http://${{ needs.deploy-infrastructure.outputs.alb-dns }}"
-            echo "CloudFront: ${{ needs.deploy-infrastructure.outputs.cloudfront-url }}"
-          else
-            echo "❌ Production deployment failed or rolled back"
-            exit 1
-          fi
+          echo "Deploy PRODUÇÃO concluído!"
+          echo "Commit: ${{ github.sha }}"
+          echo "Autor: ${{ github.actor }}"
