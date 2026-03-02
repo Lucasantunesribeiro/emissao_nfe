@@ -27,10 +27,11 @@ import (
 
 // LambdaHandler is the main Lambda handler using DynamoDB
 type LambdaHandler struct {
-	repo        *repositorio.RepositorioDynamoDB
-	s3Client    *s3.Client
-	pdfGenerator *pdf.GeradorPDF
-	bucketName  string
+	repo             *repositorio.RepositorioDynamoDB
+	s3Client         *s3.Client
+	pdfGenerator     *pdf.GeradorPDF
+	bucketName       string
+	cloudFrontDomain string
 }
 
 // NewLambdaHandler creates a new Lambda handler with DynamoDB
@@ -71,16 +72,20 @@ func NewLambdaHandler() (*LambdaHandler, error) {
 		bucketName = "nfe-pdfs-mock" // default
 	}
 
+	cloudFrontDomain := os.Getenv("CLOUDFRONT_DOMAIN")
+
 	slog.Info("Lambda handler initialized successfully",
 		"mainTable", mainTableName,
 		"eventsTable", eventsTableName,
-		"pdfBucket", bucketName)
+		"pdfBucket", bucketName,
+		"cloudFrontDomain", cloudFrontDomain)
 
 	return &LambdaHandler{
-		repo:         repo,
-		s3Client:     s3Client,
-		pdfGenerator: pdfGenerator,
-		bucketName:   bucketName,
+		repo:             repo,
+		s3Client:         s3Client,
+		pdfGenerator:     pdfGenerator,
+		bucketName:       bucketName,
+		cloudFrontDomain: cloudFrontDomain,
 	}, nil
 }
 
@@ -296,6 +301,19 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin), nil
 	}
 
+	// Validate stock availability before adding item
+	saldo, produtoExiste, err := h.repo.BuscarSaldoProduto(ctx, produtoID)
+	if err != nil {
+		slog.Error("Error checking product stock", "produtoId", produtoID, "error", err)
+		return errorResponse(http.StatusInternalServerError, "Erro ao verificar estoque do produto", origin), nil
+	}
+	if !produtoExiste {
+		return errorResponse(http.StatusNotFound, "Produto não encontrado no estoque", origin), nil
+	}
+	if saldo < req.Quantidade {
+		return errorResponse(http.StatusConflict, fmt.Sprintf("Saldo insuficiente. Disponível: %d, Solicitado: %d", saldo, req.Quantidade), origin), nil
+	}
+
 	item := &dominio.ItemNota{
 		ID:            uuid.New(),
 		NotaID:        notaID,
@@ -471,8 +489,13 @@ func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string
 		return errorResponse(http.StatusInternalServerError, "Erro ao salvar PDF", origin), nil
 	}
 
-	// Create PDF URL
-	pdfURL := fmt.Sprintf("https://%s.s3.amazonaws.com/%s", h.bucketName, pdfKey)
+	// Create PDF URL — usa CloudFront se disponível (S3 bloqueia acesso público)
+	var pdfURL string
+	if h.cloudFrontDomain != "" {
+		pdfURL = fmt.Sprintf("https://%s/%s", h.cloudFrontDomain, pdfKey)
+	} else {
+		pdfURL = fmt.Sprintf("https://%s.s3.amazonaws.com/%s", h.bucketName, pdfKey)
+	}
 	now := time.Now()
 
 	sol := &dominio.SolicitacaoImpressao{
