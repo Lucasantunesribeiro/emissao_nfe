@@ -149,11 +149,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: web-app/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build production
         run: npm run build:prod
@@ -178,10 +176,10 @@ jobs:
             --paths "/*"
 
   # ─────────────────────────────────────────
-  # CDK – Deploy infra quando mudar (opcional)
+  # CDK – Deploy infra (apenas quando infra/cdk muda)
   # ─────────────────────────────────────────
   deploy-infra:
-    name: Deploy CDK Infra (se infra/cdk mudou)
+    name: Deploy CDK Infra
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'workflow_dispatch' ||
@@ -197,11 +195,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: infra/cdk/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Compile TypeScript
         run: npm run build
@@ -242,7 +238,7 @@ jobs:
 
       - name: Summary
         run: |
-          echo "Deployment DEV concluído com sucesso!"
+          echo "Deploy DEV concluído!"
           echo "Frontend: https://d1gdw7rlsi8u42.cloudfront.net"
           echo "API Faturamento: https://rtbyoojhhd.execute-api.us-east-1.amazonaws.com/dev/api/v1"
           echo "API Estoque: https://t5baqexuo5.execute-api.us-east-1.amazonaws.com/dev/api/v1"
