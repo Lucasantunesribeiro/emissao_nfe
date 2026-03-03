@@ -243,11 +243,16 @@ func (h *LambdaHandler) handleGetNota(ctx context.Context, notaIDStr string, ori
 }
 
 func (h *LambdaHandler) handleListNotas(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
-	// For now, list only open notas
-	// TODO: Add query parameter support for filtering by status
-	notas, err := h.repo.ListarNotasAbertas(ctx)
+	status := request.QueryStringParameters["status"]
+
+	// Validate status if provided
+	if status != "" && status != dominio.StatusNotaAberta && status != dominio.StatusNotaFechada {
+		return errorResponse(http.StatusBadRequest, "Status inválido. Use 'ABERTA' ou 'FECHADA'", origin), nil
+	}
+
+	notas, err := h.repo.ListarNotas(ctx, status)
 	if err != nil {
-		slog.Error("Error listing notas", "error", err)
+		slog.Error("Error listing notas", "status", status, "error", err)
 		return errorResponse(http.StatusInternalServerError, "Erro ao listar notas", origin), nil
 	}
 

@@ -320,21 +320,20 @@ func (r *RepositorioDynamoDB) FecharNota(ctx context.Context, notaID uuid.UUID) 
 	return nil
 }
 
-// ListarNotasAbertas lists all open notas
-func (r *RepositorioDynamoDB) ListarNotasAbertas(ctx context.Context) ([]dominio.NotaFiscal, error) {
-	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("GSI2"),
-		KeyConditionExpression: aws.String("GSI2_PK = :pk"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", dominio.StatusNotaAberta)},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error listing open notas: %w", err)
+// ListarNotas lists notas filtered by status. If status is empty, returns all notas.
+func (r *RepositorioDynamoDB) ListarNotas(ctx context.Context, status string) ([]dominio.NotaFiscal, error) {
+	if status != "" {
+		return r.listarNotasPorStatus(ctx, status)
 	}
+	return r.listarTodasNotas(ctx)
+}
 
-	// Temporary struct for unmarshaling with string IDs
+// ListarNotasAbertas lists all open notas (kept for backward compatibility).
+func (r *RepositorioDynamoDB) ListarNotasAbertas(ctx context.Context) ([]dominio.NotaFiscal, error) {
+	return r.listarNotasPorStatus(ctx, dominio.StatusNotaAberta)
+}
+
+func unmarshalNotas(items []map[string]types.AttributeValue) ([]dominio.NotaFiscal, error) {
 	type NotaDynamoDB struct {
 		ID          string     `dynamodbav:"ID"`
 		Numero      string     `dynamodbav:"Numero"`
@@ -344,28 +343,58 @@ func (r *RepositorioDynamoDB) ListarNotasAbertas(ctx context.Context) ([]dominio
 	}
 
 	var notasDDB []NotaDynamoDB
-	if err := attributevalue.UnmarshalListOfMaps(result.Items, &notasDDB); err != nil {
+	if err := attributevalue.UnmarshalListOfMaps(items, &notasDDB); err != nil {
 		return nil, fmt.Errorf("error unmarshaling notas: %w", err)
 	}
 
-	// Convert to domain type
-	notas := make([]dominio.NotaFiscal, len(notasDDB))
-	for i, n := range notasDDB {
+	notas := make([]dominio.NotaFiscal, 0, len(notasDDB))
+	for _, n := range notasDDB {
 		id, err := uuid.Parse(n.ID)
 		if err != nil {
 			slog.Error("Invalid UUID in nota", "id", n.ID, "error", err)
 			continue
 		}
-		notas[i] = dominio.NotaFiscal{
+		notas = append(notas, dominio.NotaFiscal{
 			ID:          id,
 			Numero:      n.Numero,
 			Status:      n.Status,
 			DataCriacao: n.DataCriacao,
 			DataFechada: n.DataFechada,
-		}
+		})
 	}
 
 	return notas, nil
+}
+
+func (r *RepositorioDynamoDB) listarNotasPorStatus(ctx context.Context, status string) ([]dominio.NotaFiscal, error) {
+	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("GSI2"),
+		KeyConditionExpression: aws.String("GSI2_PK = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", status)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error listing notas by status %s: %w", status, err)
+	}
+
+	return unmarshalNotas(result.Items)
+}
+
+func (r *RepositorioDynamoDB) listarTodasNotas(ctx context.Context) ([]dominio.NotaFiscal, error) {
+	result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
+		TableName:        aws.String(r.tableName),
+		FilterExpression: aws.String("entity_type = :et"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":et": &types.AttributeValueMemberS{Value: "NOTA"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error listing all notas: %w", err)
+	}
+
+	return unmarshalNotas(result.Items)
 }
 
 // MarcarMensagemProcessada marks a message as processed for idempotency
