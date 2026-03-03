@@ -204,8 +204,7 @@ export class ComputeStackServerless extends cdk.Stack {
       runtime: lambda.Runtime.PROVIDED_AL2023, // Go custom runtime
       handler: 'bootstrap',
       code: lambda.Code.fromAsset('../../servico-faturamento/build', {
-        // NOTA: Build com: GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap cmd/lambda/main.go
-        // Updated: 2026-01-12 22:54 - Added EventBridge publisher
+        // NOTA: Build com: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap ./cmd/lambda/main.go
       }),
       architecture: lambda.Architecture.X86_64,
       memorySize: 512,
@@ -428,10 +427,17 @@ export class ComputeStackServerless extends cdk.Stack {
     const healthResource = this.apiFaturamento.root.addResource('health');
     healthResource.addMethod('GET', faturamentoIntegration);
 
-    // Security Headers em respostas de erro (API Faturamento)
+    // Security + CORS Headers em respostas de erro (API Faturamento)
+    // CORS é necessário para que o browser mostre o erro real ao invés de "CORS blocked"
+    const corsOriginHeader = cloudFrontDomain
+      ? `'https://${cloudFrontDomain}'`
+      : "'http://localhost:4200'";
+
     this.apiFaturamento.addGatewayResponse('Default4XX', {
       type: apigateway.ResponseType.DEFAULT_4XX,
       responseHeaders: {
+        'Access-Control-Allow-Origin': corsOriginHeader,
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -442,6 +448,8 @@ export class ComputeStackServerless extends cdk.Stack {
     this.apiFaturamento.addGatewayResponse('Default5XX', {
       type: apigateway.ResponseType.DEFAULT_5XX,
       responseHeaders: {
+        'Access-Control-Allow-Origin': corsOriginHeader,
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -493,10 +501,12 @@ export class ComputeStackServerless extends cdk.Stack {
     const estoqueHealthResource = this.apiEstoque.root.addResource('health');
     estoqueHealthResource.addMethod('GET', estoqueIntegration);
 
-    // Security Headers em respostas de erro (API Estoque)
+    // Security + CORS Headers em respostas de erro (API Estoque)
     this.apiEstoque.addGatewayResponse('Default4XX', {
       type: apigateway.ResponseType.DEFAULT_4XX,
       responseHeaders: {
+        'Access-Control-Allow-Origin': corsOriginHeader,
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -507,6 +517,8 @@ export class ComputeStackServerless extends cdk.Stack {
     this.apiEstoque.addGatewayResponse('Default5XX', {
       type: apigateway.ResponseType.DEFAULT_5XX,
       responseHeaders: {
+        'Access-Control-Allow-Origin': corsOriginHeader,
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
