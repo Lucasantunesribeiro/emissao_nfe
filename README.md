@@ -8,7 +8,7 @@
 [![Angular](https://img.shields.io/badge/Angular-18-DD0031?logo=angular)](https://angular.io)
 [![TypeScript](https://img.shields.io/badge/TypeScript-CDK-3178C6?logo=typescript)](https://aws.amazon.com/cdk/)
 
-**🔗 Demo:** [https://d19fn3hv30xsoq.cloudfront.net](https://d19fn3hv30xsoq.cloudfront.net)
+**🔗 Demo:** [https://d1gdw7rlsi8u42.cloudfront.net](https://d1gdw7rlsi8u42.cloudfront.net)
 
 ---
 
@@ -236,7 +236,7 @@ curl -X POST $API_URL/api/v1/notas \
   -d '{"numero": "NFE-001"}'
 
 # Frontend disponível em CloudFront
-echo "Acesse: https://d19fn3hv30xsoq.cloudfront.net"
+echo "Acesse: https://d1gdw7rlsi8u42.cloudfront.net"
 ```
 
 ---
