@@ -122,5 +122,18 @@ jobs:
       - name: Compile TypeScript
         run: npm run build
 
+      - name: Criar placeholders de assets Lambda (necessário para cdk synth sem builds reais)
+        run: |
+          mkdir -p ../../servico-faturamento/build
+          touch ../../servico-faturamento/build/bootstrap
+          mkdir -p ../../servico-faturamento/build-outbox
+          touch ../../servico-faturamento/build-outbox/bootstrap
+          mkdir -p ../../servico-faturamento/build-pdf
+          touch ../../servico-faturamento/build-pdf/bootstrap
+          mkdir -p ../../servico-estoque/publish-dynamodb
+          touch ../../servico-estoque/publish-dynamodb/placeholder
+          mkdir -p ../../infra/lambda-authorizer/dist
+          touch ../../infra/lambda-authorizer/dist/index.js
+
       - name: Synth (dev)
         run: npm run synth:serverless -- --context env=dev
