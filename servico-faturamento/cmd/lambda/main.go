@@ -306,7 +306,9 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin), nil
 	}
 
-	// Validate stock availability before adding item
+	// Validate stock availability before adding item.
+	// Must account for quantities of the same product already in this nota,
+	// since stock is only decremented when the nota is closed/printed.
 	saldo, produtoExiste, err := h.repo.BuscarSaldoProduto(ctx, produtoID)
 	if err != nil {
 		slog.Error("Error checking product stock", "produtoId", produtoID, "error", err)
@@ -315,8 +317,17 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 	if !produtoExiste {
 		return errorResponse(http.StatusNotFound, "Produto não encontrado no estoque", origin), nil
 	}
-	if saldo < req.Quantidade {
-		return errorResponse(http.StatusConflict, fmt.Sprintf("Saldo insuficiente. Disponível: %d, Solicitado: %d", saldo, req.Quantidade), origin), nil
+
+	var jaReservadoNaNota int
+	for _, item := range nota.Itens {
+		if item.ProdutoID == produtoID {
+			jaReservadoNaNota += item.Quantidade
+		}
+	}
+
+	disponivel := saldo - jaReservadoNaNota
+	if disponivel < req.Quantidade {
+		return errorResponse(http.StatusConflict, fmt.Sprintf("Saldo insuficiente. Estoque: %d, Já na nota: %d, Disponível: %d, Solicitado: %d", saldo, jaReservadoNaNota, disponivel, req.Quantidade), origin), nil
 	}
 
 	item := &dominio.ItemNota{
