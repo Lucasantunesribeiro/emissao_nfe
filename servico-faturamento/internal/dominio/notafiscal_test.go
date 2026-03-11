@@ -109,3 +109,44 @@ func TestItemNota_CalcularSubtotal(t *testing.T) {
 		t.Errorf("esperava subtotal %.2f, obteve %.2f", esperado, subtotal)
 	}
 }
+
+func TestNotaFiscal_Fechar_StatusReservadaCancelada(t *testing.T) {
+	t.Run("deve rejeitar fechar nota RESERVADA", func(t *testing.T) {
+		nota := &dominio.NotaFiscal{
+			ID:     uuid.New(),
+			Numero: "NF-010",
+			Status: dominio.StatusNotaReservada,
+			Itens: []dominio.ItemNota{
+				{ID: uuid.New(), ProdutoID: uuid.New(), Quantidade: 1, PrecoUnitario: 10},
+			},
+		}
+		if err := nota.Fechar(); err == nil {
+			t.Error("esperava erro ao fechar nota RESERVADA")
+		}
+	})
+
+	t.Run("deve rejeitar fechar nota CANCELADA", func(t *testing.T) {
+		nota := &dominio.NotaFiscal{
+			ID:     uuid.New(),
+			Numero: "NF-011",
+			Status: dominio.StatusNotaCancelada,
+			Itens: []dominio.ItemNota{
+				{ID: uuid.New(), ProdutoID: uuid.New(), Quantidade: 1, PrecoUnitario: 10},
+			},
+		}
+		if err := nota.Fechar(); err == nil {
+			t.Error("esperava erro ao fechar nota CANCELADA")
+		}
+	})
+}
+
+func TestNotaFiscal_CalcularTotal_Vazia(t *testing.T) {
+	nota := &dominio.NotaFiscal{
+		ID:     uuid.New(),
+		Numero: "NF-012",
+		Itens:  []dominio.ItemNota{},
+	}
+	if total := nota.CalcularTotal(); total != 0 {
+		t.Errorf("esperava total 0 para nota sem itens, obteve %.2f", total)
+	}
+}
