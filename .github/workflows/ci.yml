@@ -28,12 +28,16 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Vet (apenas pacotes Lambda)
+      - name: Vet (pacotes Lambda)
         run: |
           go vet ./cmd/lambda/...
           go vet ./cmd/lambda-outbox/...
           go vet ./cmd/lambda-pdf/...
+          go vet ./cmd/lambda-estoque-consumer/...
           go vet ./internal/...
+
+      - name: Test
+        run: go test ./...
 
       - name: Build – Lambda principal
         run: |
@@ -52,6 +56,12 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
             go build -tags lambda.norpc -o /tmp/bootstrap-pdf \
             ./cmd/lambda-pdf/main.go
+
+      - name: Build – Lambda Estoque Consumer
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags lambda.norpc -o /tmp/bootstrap-estoque-consumer \
+            ./cmd/lambda-estoque-consumer/main.go
 
   # ─────────────────────────────────────────
   # .NET 8 – Estoque (managed runtime, DLLs)
@@ -130,6 +140,8 @@ jobs:
           touch ../../servico-faturamento/build-outbox/bootstrap
           mkdir -p ../../servico-faturamento/build-pdf
           touch ../../servico-faturamento/build-pdf/bootstrap
+          mkdir -p ../../servico-faturamento/build-estoque-consumer
+          touch ../../servico-faturamento/build-estoque-consumer/bootstrap
           mkdir -p ../../servico-estoque/publish-dynamodb
           touch ../../servico-estoque/publish-dynamodb/placeholder
           mkdir -p ../../infra/lambda-authorizer/dist

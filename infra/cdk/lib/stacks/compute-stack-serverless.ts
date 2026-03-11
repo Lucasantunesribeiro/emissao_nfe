@@ -8,6 +8,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Construct } from 'constructs';
 import { InfraConfig } from '../config/dev';
@@ -263,15 +264,45 @@ export class ComputeStackServerless extends cdk.Stack {
       reservedConcurrentExecutions: config.environment === 'prod' ? 10 : undefined,
     });
 
-    // SQS Event Source: estoque-reserva → Lambda Estoque
-    this.estoqueFunction.addEventSource(new lambdaEventSources.SqsEventSource(estoqueReservaQueue, {
+    // SQS Event Source: faturamento-confirmacao → Lambda Faturamento (ReservaConfirmada/ReservaFalhou)
+    this.faturamentoFunction.addEventSource(new lambdaEventSources.SqsEventSource(faturamentoConfirmacaoQueue, {
       batchSize: 10,
       maxBatchingWindow: cdk.Duration.seconds(5),
       reportBatchItemFailures: true,
     }));
 
-    // SQS Event Source: faturamento-confirmacao → Lambda Faturamento
-    this.faturamentoFunction.addEventSource(new lambdaEventSources.SqsEventSource(faturamentoConfirmacaoQueue, {
+    // Lambda: Estoque Consumer (Go) — processa SQS com eventos de nota fechada
+    // O Lambda .NET (estoqueFunction) NÃO é compatível com SQS (usa RestApi hosting),
+    // por isso criamos um Lambda Go separado para consumir a fila de reserva.
+    const estoqueConsumerLogGroup = new logs.LogGroup(this, 'EstoqueConsumerLogGroup', {
+      logGroupName: `/aws/lambda/nfe-estoque-consumer-${config.environment}`,
+      retention: config.environment === 'prod'
+        ? logs.RetentionDays.ONE_MONTH
+        : logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const estoqueConsumerFunction = new lambda.Function(this, 'EstoqueConsumerFunction', {
+      functionName: `nfe-estoque-consumer-${config.environment}`,
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset('../../servico-faturamento/build-estoque-consumer'),
+      architecture: lambda.Architecture.X86_64,
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(30),
+      role: lambdaRole,
+      logGroup: estoqueConsumerLogGroup,
+      environment: {
+        ENVIRONMENT: config.environment,
+        LOG_LEVEL: 'INFO',
+        DYNAMODB_TABLE_NAME: mainTable.tableName,
+        DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
+        EVENT_BUS_NAME: eventBus.eventBusName,
+      },
+    });
+
+    // SQS Event Source: estoque-reserva → Lambda EstoqueConsumer (Go)
+    estoqueConsumerFunction.addEventSource(new lambdaEventSources.SqsEventSource(estoqueReservaQueue, {
       batchSize: 10,
       maxBatchingWindow: cdk.Duration.seconds(5),
       reportBatchItemFailures: true,
@@ -532,13 +563,13 @@ export class ComputeStackServerless extends cdk.Stack {
     // 5. EventBridge Rules (Saga)
     // ===========================
 
-    // Rule: NotaFiscalCriada → SQS estoque-reserva
-    new events.Rule(this, 'NotaFiscalCriadaRule', {
-      ruleName: `nfe-nota-criada-${config.environment}`,
+    // Rule: Faturamento.NotaFechada → SQS estoque-reserva (aciona saga de reserva)
+    new events.Rule(this, 'NotaFechadaRule', {
+      ruleName: `nfe-nota-fechada-${config.environment}`,
       eventBus,
       eventPattern: {
         source: ['nfe.faturamento'],
-        detailType: ['NotaFiscalCriada'],
+        detailType: ['Faturamento.NotaFechada'],
       },
       targets: [new targets.SqsQueue(estoqueReservaQueue)],
     });
@@ -566,7 +597,50 @@ export class ComputeStackServerless extends cdk.Stack {
     });
 
     // ===========================
-    // 6. Outputs
+    // 6. CloudWatch Alarms (observabilidade)
+    // ===========================
+
+    // Alarm 1: DLQ com mensagens — indica falhas críticas na saga
+    new cloudwatch.Alarm(this, 'DlqAlarm', {
+      alarmName: `nfe-dlq-messages-${config.environment}`,
+      alarmDescription: 'Mensagens na DLQ indicam falha na saga (reserva de estoque ou PDF)',
+      metric: dlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // Alarm 2: Lambda Faturamento com erros (3+ erros em 5 minutos)
+    new cloudwatch.Alarm(this, 'FaturamentoErrorsAlarm', {
+      alarmName: `nfe-faturamento-errors-${config.environment}`,
+      alarmDescription: 'Lambda Faturamento com taxa elevada de erros',
+      metric: this.faturamentoFunction.metricErrors({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 3,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // Alarm 3: Lambda Estoque com erros
+    new cloudwatch.Alarm(this, 'EstoqueErrorsAlarm', {
+      alarmName: `nfe-estoque-errors-${config.environment}`,
+      alarmDescription: 'Lambda Estoque com taxa elevada de erros',
+      metric: this.estoqueFunction.metricErrors({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 3,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // ===========================
+    // 7. Outputs
     // ===========================
 
     new cdk.CfnOutput(this, 'ApiFaturamentoUrl', {
@@ -599,6 +673,11 @@ export class ComputeStackServerless extends cdk.Stack {
     new cdk.CfnOutput(this, 'DlqUrl', {
       value: dlq.queueUrl,
       description: 'Dead Letter Queue URL',
+    });
+
+    new cdk.CfnOutput(this, 'EstoqueConsumerFunctionArn', {
+      value: estoqueConsumerFunction.functionArn,
+      description: 'Lambda Estoque Consumer (Go) ARN',
     });
 
     // ===========================

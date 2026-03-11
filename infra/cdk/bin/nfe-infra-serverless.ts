@@ -46,12 +46,12 @@ const networkStack = new NetworkStack(app, `NfeNetworkServerless-${environment}`
 // 2. Secrets Stack removido - não é usado na arquitetura serverless (DynamoDB + EventBridge)
 // Economia: $0.80/mês (2 secrets × $0.40/secret)
 
-// 3. Auth Stack (Cognito User Pool) - TODO: Desabilitado temporariamente
-// const authStack = new AuthStack(app, `NfeAuthServerless-${environment}`, {
-//   ...stackProps,
-//   config,
-//   stackName: `nfe-auth-serverless-${environment}`,
-// });
+// 3. Auth Stack (Cognito User Pool)
+const authStack = new AuthStack(app, `NfeAuthServerless-${environment}`, {
+  ...stackProps,
+  config,
+  stackName: `nfe-auth-serverless-${environment}`,
+});
 
 // 4. Database Stack DynamoDB (100% Free Tier)
 const databaseStack = new DatabaseDynamoDBStack(app, `NfeDatabaseDynamoDB-${environment}`, {
@@ -75,7 +75,6 @@ const frontendStack = new FrontendStack(app, `NfeFrontendServerless-${environmen
 });
 
 // 6. Compute Stack Serverless (Lambda + API Gateway + DynamoDB)
-// TODO: Autenticação desabilitada temporariamente - habilitar quando AuthStack estiver funcionando
 const computeStack = new ComputeStackServerless(app, `NfeComputeServerless-${environment}`, {
   ...stackProps,
   config,
@@ -85,14 +84,14 @@ const computeStack = new ComputeStackServerless(app, `NfeComputeServerless-${env
   eventBus: messagingStack.eventBus,
   frontendBucketName: frontendStack.bucket.bucketName,
   cloudFrontDomain: frontendStack.distribution.distributionDomainName,
-  // userPoolId: authStack.userPool.userPoolId, // Desabilitado
-  // userPoolClientId: authStack.userPoolClient.userPoolClientId, // Desabilitado
+  userPoolId: authStack.userPool.userPoolId,
+  userPoolClientId: authStack.userPoolClient.userPoolClientId,
   stackName: `nfe-compute-serverless-${environment}`,
 });
 computeStack.addDependency(databaseStack);
 computeStack.addDependency(messagingStack);
-computeStack.addDependency(frontendStack); // Dependência do frontend para obter bucket name
-// computeStack.addDependency(authStack); // Desabilitado
+computeStack.addDependency(frontendStack);
+computeStack.addDependency(authStack);
 
 // Cost Summary Output (Free Tier Optimized - DynamoDB)
 new cdk.CfnOutput(computeStack, 'CostBreakdown', {
