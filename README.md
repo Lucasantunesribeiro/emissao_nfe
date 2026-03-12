@@ -1,424 +1,398 @@
-# 📄 Sistema de Emissão de Nota Fiscal Eletrônica (NFe)
+# Sistema de Emissão de Nota Fiscal Eletrônica (NFe)
 
-> **Arquitetura Serverless Event-Driven completa** para emissão de notas fiscais com microserviços, mensageria e geração automática de PDFs.
+> **Arquitetura Serverless Event-Driven completa** para emissão de notas fiscais com microserviços, saga coreografada, autenticação JWT e geração assíncrona de PDFs.
 
+[![CI](https://github.com/Lucasantunesribeiro/emissao_nfe/actions/workflows/ci.yml/badge.svg)](https://github.com/Lucasantunesribeiro/emissao_nfe/actions/workflows/ci.yml)
 [![AWS](https://img.shields.io/badge/AWS-Serverless-FF9900?logo=amazon-aws)](https://aws.amazon.com)
-[![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![.NET](https://img.shields.io/badge/.NET-9-512BD4?logo=dotnet)](https://dotnet.microsoft.com)
-[![Angular](https://img.shields.io/badge/Angular-18-DD0031?logo=angular)](https://angular.io)
+[![Angular](https://img.shields.io/badge/Angular-17-DD0031?logo=angular)](https://angular.io)
 [![TypeScript](https://img.shields.io/badge/TypeScript-CDK-3178C6?logo=typescript)](https://aws.amazon.com/cdk/)
 
-**🔗 Demo:** [https://d1gdw7rlsi8u42.cloudfront.net](https://d1gdw7rlsi8u42.cloudfront.net)
+**Demo:** [https://d1gdw7rlsi8u42.cloudfront.net](https://d1gdw7rlsi8u42.cloudfront.net)
 
 ---
 
-## 🎯 Sobre o Projeto
+## Sobre o Projeto
 
-Sistema distribuído **100% serverless** para gestão de notas fiscais eletrônicas, desenvolvido com **arquitetura orientada a eventos** e **práticas de FinOps** para otimização de custos AWS.
+Sistema distribuído **100% serverless** para gestão de notas fiscais eletrônicas, desenvolvido com **arquitetura orientada a eventos**, **saga coreografada** e **práticas de FinOps** para operar no AWS Free Tier (~$3–5/mês).
 
-### Principais Diferenciais Técnicos
+### Diferenciais Técnicos
 
-✅ **Arquitetura Event-Driven**: EventBridge + SQS com padrão Outbox
-✅ **Microserviços Poliglota**: Go + .NET 9 em Lambda Functions
-✅ **Single-Table Design**: DynamoDB com GSI otimizados
-✅ **Geração Dinâmica de PDF**: Lambda + gofpdf com dados reais da nota
-✅ **Infraestrutura como Código**: AWS CDK com cost guardrails
-✅ **Otimização de Custos**: ~$0/mês no Free Tier ($5.49/mês fora)
+- **Saga Coreografada completa** — EventBridge → SQS → Lambda com compensação automática
+- **Outbox Pattern** — exactly-once delivery via DynamoDB Streams (sem two-phase commit)
+- **SQS Mux** — um Lambda processa HTTP e SQS no mesmo binário (detecção por `json.RawMessage`)
+- **PDF 100% assíncrono** — 202 Accepted + polling, sem timeout de Lambda
+- **Autenticação JWT com Cognito** — Lambda Authorizer em todas as rotas protegidas
+- **Single-Table Design** — DynamoDB com PK/SK e GSI1/GSI2 otimizados
+- **CloudWatch Alarms** — DLQ, erros Lambda faturamento e estoque monitorados
+- **28 testes automatizados** — Go (domain), .NET (xUnit + Moq), Angular (Jest)
+- **CI completo** — 4 jobs independentes: Go, .NET, Angular, CDK synth
 
 ---
 
-## 🛠️ Stack Tecnológica
+## Stack Tecnológica
 
 ### Backend
 
-| Serviço | Linguagem | Framework/Libs | Responsabilidade |
-|---------|-----------|----------------|------------------|
-| **servico-faturamento** | Go 1.23 | AWS Lambda Go SDK, gofpdf, DynamoDB | Gestão de notas fiscais e geração de PDFs |
-| **servico-estoque** | .NET 9 | ASP.NET Minimal APIs, EF Core | Controle de produtos e reservas de estoque |
+| Serviço | Linguagem | Runtime | Responsabilidade |
+|---------|-----------|---------|------------------|
+| `servico-faturamento` | Go 1.25 | Lambda `provided.al2023` | CRUD de notas, outbox, PDF assíncrono, saga SQS handler |
+| `servico-estoque` | .NET 9 | Lambda `dotnet8` | CRUD de produtos, reserva de estoque |
 
-**Arquitetura:**
-- **Runtime**: AWS Lambda (provided.al2023 para Go, dotnet9 para .NET)
-- **API Gateway**: REST APIs com CORS e rate limiting
-- **Mensageria**: EventBridge (event bus customizado) + SQS + DLQ
-- **Banco de Dados**: DynamoDB (single-table design) + RDS PostgreSQL
-- **Storage**: S3 para PDFs + CloudFront para CDN
-- **Segurança**: Secrets Manager, IAM roles com least privilege
+**4 Lambdas Go:**
+- `cmd/lambda/` — API HTTP + SQS handler (mux de eventos)
+- `cmd/lambda-outbox/` — DynamoDB Streams → EventBridge
+- `cmd/lambda-pdf/` — Geração assíncrona de PDF + upload S3
+- `cmd/lambda-estoque-consumer/` — Saga: reserva/liberação de estoque com compensação
 
 ### Frontend
 
-- **Angular 18** (Standalone Components, SSR-ready)
-- **TailwindCSS** para design system
-- **RxJS** para programação reativa
-- **TypeScript** strict mode
-- **Hospedagem**: S3 Static Website + CloudFront
+- **Angular 17** — Standalone Components, `inject()`, `authGuard`, `auth.interceptor`
+- **TailwindCSS** — design system utilitário
+- **RxJS** — polling de status, interceptors HTTP, fluxo reativo
+- **Jest** — testes unitários (11 specs)
 
-### Infraestrutura (IaC)
+### Infraestrutura
 
-- **AWS CDK** (TypeScript) com 6 stacks modulares
-- **Cost Guardrails**: CDK Aspects para prevenir recursos caros
-- **Multi-ambiente**: dev/prod com configurações separadas
-- **CI/CD Ready**: Scripts de deploy automatizado
+- **AWS CDK** (TypeScript) — 6 stacks modulares com cost guardrails
+- **API Gateway HTTP** + **Lambda Authorizer** (Cognito JWT)
+- **Cognito User Pool** — autenticação (Free Tier: 50K MAU)
+- **DynamoDB** — single-table design, Free Tier permanente
+- **EventBridge** + **SQS** + **DLQ** — mensageria serverless sem broker
+- **S3** + **CloudFront** — frontend e PDFs gerados
+- **CloudWatch Alarms** — DLQ (threshold=1), Lambda errors (threshold=3/5min)
 
 ---
 
-## 🏗️ Arquitetura do Sistema
+## Arquitetura do Sistema
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         FRONTEND (Angular 18)                     │
-│                     S3 + CloudFront Distribution                 │
-└────────────────┬────────────────────────────────────────────────┘
-                 │ HTTPS
-                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    AWS API GATEWAY (REST)                        │
-│              ┌──────────────┬──────────────┐                     │
-│              │  Faturamento │   Estoque    │                     │
-│              │   API (Go)   │  API (.NET)  │                     │
-└──────────────┴──────┬───────┴──────┬───────┴─────────────────────┘
-                      │              │
-                      ▼              ▼
-           ┌──────────────────────────────────┐
-           │   AWS LAMBDA FUNCTIONS           │
-           │                                  │
-           │  ┌─────────────┐  ┌───────────┐ │
-           │  │ Faturamento │  │  Estoque  │ │
-           │  │   (Go)      │  │  (.NET 9) │ │
-           │  └──────┬──────┘  └─────┬─────┘ │
-           │         │               │       │
-           │         ▼               ▼       │
-           │  ┌──────────────────────────┐  │
-           │  │   PDF Generator (Go)     │  │
-           │  │   gofpdf + S3 Upload     │  │
-           │  └────────┬─────────────────┘  │
-           └───────────┼─────────────────────┘
-                       │
-                       ▼
-      ┌────────────────────────────────────────┐
-      │      EVENT BUS (EventBridge)           │
-      │  • Faturamento.NotaFechada             │
-      │  • Faturamento.ImpressaoSolicitada     │
-      │  • Estoque.ReservaConfirmada           │
-      └────────┬───────────────────────────────┘
+[Usuário]
+    │ HTTPS + JWT Bearer
+    ▼
+API Gateway (HTTP API)
+    │ Lambda Authorizer (Cognito JWT)
+    ├──────────────────┬─────────────────────
+    ▼                  ▼
+Lambda Faturamento     Lambda Estoque
+(Go — HTTP+SQS mux)   (.NET 9 — REST API)
+    │                  │
+    ▼                  ▼
+DynamoDB (single-table: PK/SK + GSI1 + GSI2)
+    │
+    ▼ DynamoDB Streams
+Lambda Outbox ──────► EventBridge (nfe-events-dev)
+                            │
+               ┌────────────┴────────────┐
+               ▼                         ▼
+           SQS estoque-reserva    SQS faturamento-confirmacao
+               │                         │
+               ▼                         ▼
+    Lambda EstoqueConsumer    Lambda Faturamento (SQS mux)
+    (reserva / libera)        (atualiza status: RESERVADA/CANCELADA)
                │
-               ▼
-      ┌────────────────────────────────────────┐
-      │    QUEUES (SQS + DLQ)                  │
-      │  • estoque-reserva-queue               │
-      │  • faturamento-confirmacao-queue       │
-      │  • dead-letter-queue                   │
-      └────────┬───────────────────────────────┘
-               │
-               ▼
-      ┌────────────────────────────────────────┐
-      │         DATA LAYER                     │
-      │                                        │
-      │  ┌──────────────┐  ┌───────────────┐  │
-      │  │  DynamoDB    │  │ RDS PostgreSQL│  │
-      │  │ (Main Table) │  │  (Relational) │  │
-      │  │   + GSI1/2   │  │   Migrations  │  │
-      │  └──────────────┘  └───────────────┘  │
-      └────────────────────────────────────────┘
-               │
-               ▼
-      ┌────────────────────────────────────────┐
-      │     STORAGE & CDN                      │
-      │  • S3 Bucket (nfe-pdfs-mock)           │
-      │  • CloudFront Distribution (PDFs)      │
-      └────────────────────────────────────────┘
+     ReservaConfirmada / ReservaFalhou → EventBridge
+
+[PDF Async]
+POST /imprimir → 202 Accepted (SolicitacaoImpressao PENDENTE)
+    → EventBridge (ImpressaoSolicitada)
+    → Lambda PDF → S3
+    → SolicitacaoImpressao CONCLUIDA
+Frontend polls GET /solicitacoes-impressao/{id}
 ```
 
-### Padrões Implementados
+**Eventos no barramento:**
 
-- **Event Sourcing**: Outbox pattern para garantia de entrega
-- **CQRS**: Separação de leitura/escrita (DynamoDB queries otimizadas)
-- **Idempotência**: Idempotency-Key em todas operações críticas
-- **Circuit Breaker**: Dead Letter Queue (DLQ) para mensagens falhadas
-- **Retry Logic**: Exponential backoff em integrações externas
-
----
-
-## 💡 Funcionalidades Implementadas
-
-### ✅ Gestão de Produtos (Estoque)
-- Cadastro e atualização de produtos
-- Controle de saldo em tempo real
-- Reserva de estoque com validação de disponibilidade
-- Rollback automático em caso de falha
-
-### ✅ Emissão de Notas Fiscais
-- Criação de notas com múltiplos itens
-- Validação de estoque disponível antes do fechamento
-- Fechamento transacional com atualização de estoque
-- Histórico completo de operações
-
-### ✅ Geração Automática de PDF
-- **Trigger**: Evento `Faturamento.ImpressaoSolicitada` no EventBridge
-- **Processamento**: Lambda Go gera PDF com `gofpdf` em ~500ms
-- **Conteúdo Dinâmico**: Dados reais da nota (itens, quantidades, preços, total)
-- **Armazenamento**: Upload automático para S3 com URL pública
-- **Idempotência**: Chave única previne duplicação
-
-### ✅ Processamento Assíncrono
-- Mensageria desacoplada via EventBridge
-- SQS para processamento em lote
-- DLQ para análise de falhas
-- Outbox pattern implementado no DynamoDB
+| Evento | Publicador | Consumidor |
+|--------|-----------|-----------|
+| `Faturamento.NotaFechada` | Lambda Outbox | Lambda EstoqueConsumer |
+| `Faturamento.ImpressaoSolicitada` | Lambda Outbox | Lambda PDF |
+| `ReservaConfirmada` | Lambda EstoqueConsumer | Lambda Faturamento (SQS) |
+| `ReservaFalhou` | Lambda EstoqueConsumer | Lambda Faturamento (SQS) |
 
 ---
 
-## 🚀 Quick Start
+## Funcionalidades
+
+### Gestão de Produtos (Estoque — .NET)
+- Cadastro e atualização de produtos com SKU e saldo
+- Reserva de estoque via `DebitarEstoque` com validação de saldo, produto ativo e quantidade positiva
+- Rollback automático em falha de saga (compensação item a item)
+
+### Emissão de Notas Fiscais (Faturamento — Go)
+- Criação e composição de notas com múltiplos itens
+- Fechamento transacional → publica evento outbox atomicamente
+- Status da nota: `ABERTA` → `FECHADA` → `RESERVADA` | `CANCELADA`
+- Idempotência por `Idempotency-Key` no header HTTP
+
+### Geração Assíncrona de PDF
+- `POST /notas/{id}/imprimir` → `202 Accepted` + `solicitacaoId`
+- Lambda PDF recebe evento, busca nota no DynamoDB, gera PDF com `gofpdf`, faz upload no S3
+- Status: `PENDENTE` → `CONCLUIDA` | `FALHOU`
+- Frontend faz polling com RxJS até receber link do PDF
+
+### Autenticação
+- Cognito User Pool com User/Password flow
+- Lambda Authorizer valida JWT e injeta `userId`, `email`, `groups` no contexto da Lambda
+- Angular `authGuard` protege rotas e `auth.interceptor` injeta Bearer token automaticamente
+
+---
+
+## Quick Start
 
 ### Pré-requisitos
 
-- **Go 1.23+** ([download](https://go.dev/dl/))
-- **.NET 9 SDK** ([download](https://dotnet.microsoft.com/download))
-- **Node.js 22+** ([download](https://nodejs.org/))
-- **AWS CLI v2** configurado ([guia](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html))
-- **AWS CDK CLI**: `npm install -g aws-cdk`
+- Go 1.25+
+- .NET 9 SDK
+- Node.js 22+
+- AWS CLI v2 configurado (`aws configure`)
+- `npm install -g aws-cdk`
 
-### 1️⃣ Configuração
+### Build local
 
 ```bash
-# Clone o repositório
+# Clone
 git clone https://github.com/Lucasantunesribeiro/emissao_nfe.git
 cd emissao_nfe
 
-# Instalar dependências
-cd web-app && npm install && cd ..
-cd infra/cdk && npm install && cd ../..
-cd servico-faturamento && go mod download && cd ..
-```
-
-### 2️⃣ Build
-
-```bash
-# Build Serviço Estoque (.NET)
-cd servico-estoque
-dotnet publish -c Release -r linux-x64 --self-contained false -o publish
-cd ..
-
-# Build Serviço Faturamento (Go)
+# Go — faturamento (testes + binários)
 cd servico-faturamento
-GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o build/bootstrap cmd/lambda/main.go
+go test ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build/bootstrap cmd/lambda/main.go
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build-outbox/bootstrap cmd/lambda-outbox/main.go
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build-pdf/bootstrap cmd/lambda-pdf/main.go
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build-estoque-consumer/bootstrap cmd/lambda-estoque-consumer/main.go
 cd ..
 
-# Build Frontend (Angular)
+# .NET — estoque (testes + publish)
+cd servico-estoque
+dotnet test Tests/ServicoEstoque.Tests.csproj
+dotnet publish -c Release -r linux-x64 --self-contained false -o publish-dynamodb/
+cd ..
+
+# Angular — frontend (testes + build)
 cd web-app
+npm install
+npm test
 npm run build:prod
 cd ..
 ```
 
-### 3️⃣ Deploy AWS
+### Deploy AWS
 
 ```bash
 cd infra/cdk
+npm install
+npm run build
 
-# Bootstrap CDK (primeira vez)
-cdk bootstrap
+# Validar (sem deploy)
+npm run synth:serverless -- --context env=dev
 
-# Deploy todas as stacks
-cdk deploy --all --require-approval never
+# Deploy completo
+npm run deploy:serverless:dev
 ```
 
-### 4️⃣ Testar
+### Deploy Frontend
 
 ```bash
-# Obter URL da API (output do CDK)
-API_URL=$(aws cloudformation describe-stacks \
-  --stack-name nfe-compute-serverless-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ApiFaturamentoUrl`].OutputValue' \
-  --output text)
-
-# Criar nota fiscal
-curl -X POST $API_URL/api/v1/notas \
-  -H "Content-Type: application/json" \
-  -d '{"numero": "NFE-001"}'
-
-# Frontend disponível em CloudFront
-echo "Acesse: https://d1gdw7rlsi8u42.cloudfront.net"
+cd web-app && npm run build:prod
+aws s3 sync dist/web-app/ s3://nfe-frontend-dev-246599827442/ --delete
+aws cloudfront create-invalidation --distribution-id E3GS1ORK9UYGOX --paths "/*"
 ```
 
 ---
 
-## 📊 FinOps: Otimização de Custos AWS
+## Testes
 
-### Estratégias Implementadas
+### Go (servico-faturamento)
 
-| Otimização | Economia Mensal | Implementação |
-|------------|-----------------|---------------|
-| **Serverless-only** | $28.47 | Eliminado ECS, Fargate, ALB, NAT Gateway |
-| **DynamoDB On-Demand** | $0 (Free Tier) | 25GB + 25 WCU/RCU permanente grátis |
-| **Lambda Fora da VPC** | $21.90 | Sem VPC Endpoints necessários |
-| **RDS Scheduler** | $9.48 | Database rodando apenas horário comercial (dev) |
-| **Logs 1-day Retention** | $2.50 | CloudWatch Logs com retenção curta |
-| **CDK Cost Guardrails** | Prevenção | CDK Aspect bloqueia recursos caros (NAT, Fargate) |
+```bash
+cd servico-faturamento && go test ./...
+```
 
-**Resultado:** $5.49/mês (86% de economia vs. baseline $45.37/mês)
+Cobre: `NotaFiscal.Fechar()`, `CalcularTotal()`, `CalcularSubtotal()`, status RESERVADA/CANCELADA, nota vazia.
 
-### Free Tier Completo (12 meses)
+### .NET (servico-estoque)
 
-- ✅ **Lambda**: 1M invocações/mês
-- ✅ **API Gateway**: 1M chamadas/mês
-- ✅ **DynamoDB**: 25GB + 25 WCU/RCU (permanente)
-- ✅ **S3**: 5GB storage + 20K GET requests
-- ✅ **CloudFront**: 1TB transferência/mês
-- ✅ **EventBridge**: 100K eventos/mês
-- ✅ **SQS**: 1M requests/mês
+```bash
+cd servico-estoque && dotnet test Tests/ServicoEstoque.Tests.csproj
+```
+
+17 testes (xUnit + Moq):
+- `ProdutoTests` — construtor, `DebitarEstoque` (suficiente/insuficiente/zero/negativo/inativo/exato), `Desativar/Ativar`, `AtualizarSaldo`, `Resultado`
+- `ReservarEstoqueHandlerTests` — sucesso, produto não encontrado, saldo insuficiente com evento de rejeição, evento Estoque.Reservado
+
+### Angular (web-app)
+
+```bash
+cd web-app && npm test
+```
+
+11 testes (Jest + jest-preset-angular):
+- `NotaFiscalService` — GET/POST/PUT com `HttpTestingController`, header `Idempotency-Key`, URL de solicitações
+- `authGuard / publicGuard` — bloqueio sem auth, acesso com auth, redirecionamento
 
 ---
 
-## 📁 Estrutura do Projeto
+## CI/CD
+
+### GitHub Actions
+
+| Job | Trigger | Etapas |
+|-----|---------|--------|
+| **Build & Vet – Faturamento (Go)** | push/PR | `go vet`, `go test ./...`, build dos 4 binários Lambda |
+| **Build & Test – Estoque (.NET)** | push/PR | `dotnet restore`, `dotnet build`, `dotnet test` |
+| **Build – Frontend (Angular)** | push/PR | `npm install`, `npm run test:ci`, `npm run build:prod` |
+| **Synth – CDK Serverless** | push/PR | build lambda-authorizer, placeholders, `cdk synth` |
+| **Deploy – Development** | push em `main` | CDK deploy automático + frontend S3 sync |
+
+---
+
+## Estrutura do Projeto
 
 ```
 emissao_nfe/
-├── servico-estoque/              # Microserviço .NET 9
-│   ├── Api/                      # Controllers e startup
-│   ├── Aplicacao/               # Use cases (CQRS)
-│   ├── Dominio/                 # Entities e business rules
-│   └── Infraestrutura/          # EF Core, repositories, EventBridge
-│
 ├── servico-faturamento/          # Microserviço Go
-│   ├── cmd/lambda/              # Lambda handler
+│   ├── cmd/
+│   │   ├── lambda/               # Lambda API + SQS mux
+│   │   ├── lambda-outbox/        # DynamoDB Streams → EventBridge
+│   │   ├── lambda-pdf/           # Gerador PDF assíncrono
+│   │   └── lambda-estoque-consumer/ # Saga: reserva estoque
 │   ├── internal/
-│   │   ├── dominio/             # Domain models
-│   │   ├── repositorio/         # DynamoDB repositories
-│   │   └── pdf/                 # PDF generator (gofpdf)
+│   │   ├── dominio/              # Entidades + regras (+ testes)
+│   │   ├── repositorio/          # DynamoDB (CRUD + reserva + outbox)
+│   │   ├── pdf/                  # Gerador gofpdf
+│   │   └── logger/
 │   └── go.mod
 │
-├── web-app/                      # Frontend Angular 18
+├── servico-estoque/              # Microserviço .NET 9
+│   ├── Api/                      # Minimal API endpoints + Program.cs
+│   ├── Aplicacao/               # Casos de uso (ReservarEstoqueHandler)
+│   ├── Dominio/                 # Entidades (Produto, ReservaEstoque)
+│   ├── Infraestrutura/          # Repositórios DynamoDB
+│   └── Tests/                   # xUnit + Moq (17 testes)
+│       ├── Dominio/ProdutoTests.cs
+│       └── Aplicacao/ReservarEstoqueHandlerTests.cs
+│
+├── web-app/                      # Frontend Angular 17
 │   ├── src/app/
-│   │   ├── core/                # Services, guards, interceptors
-│   │   ├── features/            # Feature modules (notas, produtos)
-│   │   └── shared/              # Shared components
-│   └── tailwind.config.js
+│   │   ├── core/
+│   │   │   ├── services/         # NotaFiscalService, ProdutoService (+ specs Jest)
+│   │   │   ├── guards/           # authGuard, publicGuard (+ specs Jest)
+│   │   │   └── models/
+│   │   └── features/
+│   ├── jest.config.js
+│   ├── setup-jest.ts
+│   └── tsconfig.spec.json
 │
-├── infra/                        # Infraestrutura como Código
-│   ├── cdk/                     # AWS CDK (TypeScript)
-│   │   ├── bin/                 # CDK app entry points
+├── infra/
+│   ├── cdk/
+│   │   ├── bin/nfe-infra-serverless.ts  # Entry point ativo
 │   │   └── lib/
-│   │       ├── aspects/         # Cost guardrails
-│   │       ├── config/          # Environment configs
-│   │       └── stacks/          # CloudFormation stacks
+│   │       ├── aspects/          # Cost guardrails (sem NAT, ECS, RDS)
+│   │       ├── config/           # dev.ts, prod.ts
+│   │       └── stacks/
+│   │           ├── network-stack.ts
+│   │           ├── auth-stack.ts         # Cognito User Pool
 │   │           ├── database-dynamodb-stack.ts
-│   │           ├── compute-stack-serverless.ts
-│   │           ├── messaging-stack-serverless.ts
-│   │           └── frontend-stack-serverless.ts
-│   └── scripts/                 # Deploy automation
+│   │           ├── messaging-stack-serverless.ts  # EventBridge + SQS + DLQ
+│   │           ├── compute-stack-serverless.ts    # Lambdas + API Gateway + Alarms
+│   │           └── frontend-stack.ts     # S3 + CloudFront
+│   └── lambda-authorizer/        # Node.js JWT validator (aws-jwt-verify)
 │
-└── scripts/                      # Utility scripts
-    ├── aws-cost-check.sh        # Cost monitoring
-    └── aws-cost-kill-switch.sh  # Emergency shutdown
+└── .github/workflows/
+    ├── ci.yml                    # Build + test em todos os serviços
+    ├── deploy-dev.yml            # Auto-deploy em push para main
+    └── deploy-prod.yml           # Deploy manual com aprovação
 ```
 
 ---
 
-## 🧪 Testes e Qualidade
+## FinOps: Custos AWS
 
-### Backend
-- **Go**: `go test ./...` (unit tests)
-- **.NET**: `dotnet test` (xUnit + FluentAssertions)
+| Recurso | Custo |
+|---------|-------|
+| Lambda (1M req/mês) | Free Tier |
+| API Gateway (1M req/mês) | Free Tier |
+| DynamoDB (25GB + 25 WCU/RCU) | Free Tier permanente |
+| EventBridge (100K eventos) | Free Tier |
+| SQS (1M requests) | Free Tier |
+| Cognito (50K MAU) | Free Tier |
+| S3 + CloudFront | ~$1–2/mês |
+| **Total estimado** | **$1–3/mês** |
 
-### Frontend
-- **Angular**: `npm test` (Jasmine + Karma)
-- **E2E**: `npm run e2e` (Playwright)
-
-### Infraestrutura
-- **CDK**: `npm run test` (snapshot tests)
-- **Cost Validation**: CDK Aspects em tempo de synth
+**CDK Cost Guardrails** impedem no `cdk synth` o provisionamento de NAT Gateway, ECS/Fargate, RDS, Amazon MQ ou qualquer recurso com custo fixo alto.
 
 ---
 
-## 📈 Monitoramento
+## Segurança
 
-### CloudWatch
+- **Autenticação JWT** — Cognito User Pool + Lambda Authorizer em todas as rotas (exceto `/health`)
+- **IAM least privilege** — cada Lambda tem apenas as permissões necessárias
+- **CORS restritivo** — apenas o domínio CloudFront em produção
+- **Idempotência** — `Idempotency-Key` HTTP + deduplicação `IDEM#{messageId}` no DynamoDB
+- **Input validation** — DTO validation no .NET, validação de domínio no Go
+- **Security headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security` nas gateway responses
+
+---
+
+## Observabilidade
 
 ```bash
 # Logs em tempo real
 aws logs tail /aws/lambda/nfe-faturamento-dev --follow
 aws logs tail /aws/lambda/nfe-estoque-dev --follow
+aws logs tail /aws/lambda/nfe-estoque-consumer-dev --follow
+aws logs tail /aws/lambda/nfe-pdf-dev --follow
 
-# Métricas
-aws cloudwatch get-metric-statistics \
-  --namespace AWS/Lambda \
-  --metric-name Invocations \
-  --dimensions Name=FunctionName,Value=nfe-faturamento-dev \
-  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
-  --period 300 \
-  --statistics Sum
+# Status dos alarms
+aws cloudwatch describe-alarms --alarm-name-prefix nfe-
+
+# Mensagens na DLQ (deve ser 0)
+aws sqs get-queue-attributes \
+  --queue-url $(aws sqs get-queue-url --queue-name nfe-estoque-dlq-dev --query QueueUrl --output text) \
+  --attribute-names ApproximateNumberOfMessages
 ```
 
-### Cost Explorer
-
-```bash
-# Custo atual do mês
-./scripts/aws-cost-check.sh
-```
+**CloudWatch Alarms ativos:**
+- `nfe-dlq-messages-dev` — mensagens na DLQ (threshold=1, indica falha na saga)
+- `nfe-faturamento-errors-dev` — erros Lambda faturamento (threshold=3/5min)
+- `nfe-estoque-errors-dev` — erros Lambda estoque (threshold=3/5min)
 
 ---
 
-## 🔒 Segurança
+## Aprendizados e Decisões Técnicas
 
-- ✅ **Secrets Manager**: Credenciais de banco criptografadas
-- ✅ **IAM Roles**: Least privilege principle
-- ✅ **CORS**: Configuração restritiva por origem
-- ✅ **API Rate Limiting**: Throttling configurado
-- ✅ **Input Validation**: DTO validation em todos endpoints
-- ✅ **SQL Injection Protection**: ORM com parametrização (EF Core, GORM)
-- ✅ **DDoS Protection**: CloudFront + AWS Shield Standard
+### Por que Go para faturamento?
 
----
+Cold start <100ms com `provided.al2023` e binário estático (`CGO_ENABLED=0`). Um único binário processa tanto `APIGatewayProxyRequest` quanto `SQSEvent` via detecção por `json.RawMessage` — sem overhead de framework.
 
-## 🤝 Contribuindo
+### Por que .NET para estoque?
 
-Contribuições são bem-vindas! Por favor:
+Produtividade para lógica de domínio complexa (reservas, validações, casos de uso) com separação clara de camadas. `Amazon.Lambda.AspNetCoreServer` permite reusar Minimal APIs dentro de Lambda sem reescrever handlers.
 
-1. Fork o projeto
-2. Crie uma branch (`git checkout -b feature/AmazingFeature`)
-3. Commit suas mudanças (`git commit -m 'Add: AmazingFeature'`)
-4. Push para a branch (`git push origin feature/AmazingFeature`)
-5. Abra um Pull Request
+### Por que DynamoDB (single-table)?
 
----
+Free Tier permanente (25GB + 25 WCU/RCU). Single-table design com PK/SK compostos e GSI1/GSI2 resolve todos os access patterns sem múltiplas tabelas. O trade-off é acoplamento entre domínios na mesma tabela — consciente e aceitável para o contexto.
 
-## 📝 Licença
+### Por que EventBridge + SQS (sem RabbitMQ)?
 
-Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.
-
----
-
-## 👤 Autor
-
-**Lucas Antunes Ribeiro**
-
-- GitHub: [@Lucasantunesribeiro](https://github.com/Lucasantunesribeiro)
-- LinkedIn: [Lucas Antunes Ribeiro](https://www.linkedin.com/in/lucas-antunes-ribeiro)
-
----
-
-## 🎓 Aprendizados e Decisões Técnicas
-
-### Por que Go + .NET?
-
-- **Go**: Performance excepcional em Lambda (cold start <200ms), ideal para geração de PDFs
-- **.NET 9**: Produtividade e type safety, excelente para lógica de negócio complexa
-
-### Por que DynamoDB + PostgreSQL?
-
-- **DynamoDB**: Single-table design para queries otimizadas (100% Free Tier permanente)
-- **PostgreSQL**: Dados relacionais complexos com migrations controladas
-
-### Por que EventBridge ao invés de RabbitMQ?
-
-- **EventBridge**: Serverless, $0 no Free Tier, integração nativa com Lambda
-- **RabbitMQ (Amazon MQ)**: $28/mês mínimo, requer manutenção
+RabbitMQ via Amazon MQ custa $28/mês mínimo com overhead operacional. EventBridge + SQS é $0 no Free Tier, integração nativa com Lambda, sem manutenção de broker. A saga coreografada funciona com visibilidade equivalente.
 
 ### Por que CDK ao invés de Terraform?
 
-- **AWS CDK**: Type safety (TypeScript), constructs reutilizáveis, testes unitários
-- **Terraform**: Agnóstico, mas verboso e sem type checking
+Type safety em TypeScript, constructs reutilizáveis e CDK Aspects para cost guardrails em tempo de synth. O feedback de erro antes do deploy (ex: "sem NAT Gateway") é mais rápido do que descobrir o custo depois.
 
 ---
 
-**⭐ Se este projeto foi útil, considere dar uma estrela no GitHub!**
+## Autor
+
+**Lucas Antunes Ribeiro**
+
+- GitHub: [@Lucasantunesribeiro](https://github.com/Lucasantunesribeiro/emissao_nfe)
+- LinkedIn: [linkedin.com/in/lucas-antunes-ribeiro](https://www.linkedin.com/in/lucas-antunes-ribeiro)
+
+---
+
+**Se este projeto foi útil, considere dar uma estrela no GitHub!**
