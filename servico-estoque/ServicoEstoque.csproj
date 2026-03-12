@@ -20,4 +20,8 @@
     <TrimmerRootDescriptor Include="TrimmerRootDescriptor.xml" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Tests/**" />
+  </ItemGroup>
+
 </Project>

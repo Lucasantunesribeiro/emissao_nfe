@@ -67,7 +67,7 @@ jobs:
   # .NET 8 – Estoque (managed runtime, DLLs)
   # ─────────────────────────────────────────
   ci-estoque:
-    name: Build – Estoque (.NET 8)
+    name: Build & Test – Estoque (.NET)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -78,13 +78,18 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: |
+            8.0.x
+            9.0.x
 
       - name: Restore
         run: dotnet restore
 
       - name: Build
         run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test Tests/ServicoEstoque.Tests.csproj
 
   # ─────────────────────────────────────────
   # Angular 17 – Frontend
@@ -105,6 +110,9 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Test (Jest)
+        run: npm run test:ci
 
       - name: Build production
         run: npm run build:prod
