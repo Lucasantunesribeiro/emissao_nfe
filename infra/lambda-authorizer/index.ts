@@ -27,7 +27,7 @@ export const handler = async (event: APIGatewayTokenAuthorizerEvent): Promise<AP
     }
 
     // Validar JWT com Cognito
-    const payload = await verifier.verify(token) as TokenPayload;
+    const payload = await verifier.verify(token) as unknown as TokenPayload;
     console.log('Token válido:', { sub: payload.sub, email: payload.email });
 
     // Gerar IAM Policy de Allow

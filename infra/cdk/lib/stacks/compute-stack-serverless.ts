@@ -11,6 +11,9 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Construct } from 'constructs';
+import * as path from 'path';
+import { execSync } from 'child_process';
+import * as fs from 'fs';
 import { InfraConfig } from '../config/dev';
 
 export interface ComputeStackServerlessProps extends cdk.StackProps {
@@ -133,6 +136,7 @@ export class ComputeStackServerless extends cdk.Stack {
     // ===========================
 
     let authorizer: apigateway.TokenAuthorizer | undefined;
+    let estoqueAuthorizer: apigateway.TokenAuthorizer | undefined;
 
     if (userPoolId && userPoolClientId) {
       // Lambda Authorizer Function
@@ -150,6 +154,19 @@ export class ComputeStackServerless extends cdk.Stack {
         handler: 'index.handler',
         code: lambda.Code.fromAsset('../../infra/lambda-authorizer', {
           bundling: {
+            local: {
+              tryBundle(outputDir: string): boolean {
+                try {
+                  const authorizerDir = path.resolve(__dirname, '../../../../infra/lambda-authorizer');
+                  execSync('npm install && npm run build', { cwd: authorizerDir, stdio: 'inherit' });
+                  fs.cpSync(path.join(authorizerDir, 'dist'), outputDir, { recursive: true });
+                  fs.cpSync(path.join(authorizerDir, 'node_modules'), path.join(outputDir, 'node_modules'), { recursive: true });
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            },
             image: lambda.Runtime.NODEJS_20_X.bundlingImage,
             command: [
               'bash', '-c', [
@@ -171,11 +188,20 @@ export class ComputeStackServerless extends cdk.Stack {
         },
       });
 
-      // Token Authorizer para API Gateway
+      // Token Authorizer para API Faturamento
       authorizer = new apigateway.TokenAuthorizer(this, 'ApiAuthorizer', {
         authorizerName: `nfe-jwt-authorizer-${config.environment}`,
         handler: authorizerFunction,
-        resultsCacheTtl: cdk.Duration.minutes(5), // Cache por 5 minutos
+        resultsCacheTtl: cdk.Duration.minutes(5),
+        identitySource: 'method.request.header.Authorization',
+        validationRegex: '^Bearer [-0-9a-zA-Z\\._]*$',
+      });
+
+      // Token Authorizer para API Estoque (mesma função, construct separado)
+      estoqueAuthorizer = new apigateway.TokenAuthorizer(this, 'EstoqueApiAuthorizer', {
+        authorizerName: `nfe-jwt-authorizer-estoque-${config.environment}`,
+        handler: authorizerFunction,
+        resultsCacheTtl: cdk.Duration.minutes(5),
         identitySource: 'method.request.header.Authorization',
         validationRegex: '^Bearer [-0-9a-zA-Z\\._]*$',
       });
@@ -518,15 +544,21 @@ export class ComputeStackServerless extends cdk.Stack {
       timeout: cdk.Duration.seconds(29),
     });
 
+    // Options comuns para métodos protegidos (API Estoque)
+    const estoqueProtectedMethodOptions = estoqueAuthorizer ? {
+      authorizer: estoqueAuthorizer,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    } : undefined;
+
     // Routes: /api/v1/produtos
     const estoqueApiV1 = this.apiEstoque.root.addResource('api').addResource('v1');
     const produtosResource = estoqueApiV1.addResource('produtos');
-    produtosResource.addMethod('GET', estoqueIntegration, protectedMethodOptions);
-    produtosResource.addMethod('POST', estoqueIntegration, protectedMethodOptions);
+    produtosResource.addMethod('GET', estoqueIntegration, estoqueProtectedMethodOptions);
+    produtosResource.addMethod('POST', estoqueIntegration, estoqueProtectedMethodOptions);
 
     const produtoIdResource = produtosResource.addResource('{id}');
-    produtoIdResource.addMethod('GET', estoqueIntegration, protectedMethodOptions);
-    produtoIdResource.addMethod('PUT', estoqueIntegration, protectedMethodOptions);
+    produtoIdResource.addMethod('GET', estoqueIntegration, estoqueProtectedMethodOptions);
+    produtoIdResource.addMethod('PUT', estoqueIntegration, estoqueProtectedMethodOptions);
 
     // Health check (SEM autenticação - usado por ALB/monitoring)
     const estoqueHealthResource = this.apiEstoque.root.addResource('health');
