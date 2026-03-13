@@ -1,170 +1,115 @@
-# NFe Infrastructure - AWS CDK
+# Infraestrutura CDK
 
-Infraestrutura serverless para o sistema NFe usando AWS CDK (TypeScript).
+Fonte de verdade da infraestrutura AWS atual do projeto. O entrypoint ativo e `bin/nfe-infra-serverless.ts`.
 
-## 🚀 Quick Deploy
+## Escopo ativo
 
-```bash
-# Instalar dependências
-npm install
+O app CDK provisiona a arquitetura serverless usada hoje:
 
-# Bootstrap CDK (primeira vez apenas)
-cdk bootstrap
+- `AuthStack`: Cognito User Pool e app client.
+- `DatabaseDynamoDBStack`: main table e events table no DynamoDB.
+- `MessagingStackServerless`: EventBridge, filas SQS e DLQ.
+- `FrontendStack`: bucket S3 e distribuicao CloudFront.
+- `ComputeStackServerless`: APIs, Lambdas Go e .NET, authorizer, tracing, alarmes e dashboard.
 
-# Deploy todas as stacks (dev)
-cdk deploy --all --require-approval never
+Nao ha dependencia operacional de RDS, RabbitMQ, ECS ou ALB na trilha ativa.
 
-# Deploy stack individual
-cdk deploy nfe-compute-serverless-dev
-```
-
-## 📦 Stacks
-
-| Stack | Recursos | Custo (dev) |
-|-------|----------|-------------|
-| **database-dynamodb-dev** | DynamoDB Main Table + Events Table | $0 (Free Tier) |
-| **messaging-serverless-dev** | EventBridge + SQS + DLQ | $0 (Free Tier) |
-| **compute-serverless-dev** | Lambda Functions (Go + .NET) | $0 (Free Tier) |
-| **frontend-serverless-dev** | S3 + CloudFront | $0 (Free Tier) |
-
-**Total: ~$0-5/mês** (dependendo do uso do RDS se habilitado)
-
-## 🛠️ Comandos Úteis
+## Comandos principais
 
 ```bash
-# Synth (gerar CloudFormation templates)
-npm run cdk synth
-
-# Diff (ver mudanças antes do deploy)
-npm run cdk diff
-
-# Destroy (remover toda infraestrutura)
-cdk destroy --all
-
-# Listar stacks
-cdk list
+npm ci
+npm run build
+npm run synth:serverless -- --context env=dev
+npm run deploy:serverless:dev
+npm run deploy:serverless:prod
 ```
 
-## 🏗️ Arquitetura Serverless
-
-```
-Frontend (Angular)
-    S3 + CloudFront
-         ↓
-    API Gateway
-    ├── Faturamento API (Lambda Go)
-    └── Estoque API (Lambda .NET)
-         ↓
-    EventBridge + SQS
-         ↓
-    DynamoDB + RDS (optional)
-```
-
-## 🔧 Configuração
-
-### Environment Variables
-
-O CDK lê configurações de:
-- `lib/config/dev-config.ts` (desenvolvimento)
-- `lib/config/prod-config.ts` (produção)
-
-### Cost Guardrails
-
-CDK Aspects impedem recursos caros:
-- ❌ NAT Gateway
-- ❌ ECS/Fargate
-- ❌ RDS Multi-AZ em dev
-
-### Multi-ambiente
+Para destruir:
 
 ```bash
-# Deploy dev
-cdk deploy --all --context env=dev
-
-# Deploy prod
-cdk deploy --all --context env=prod
+npm run destroy:serverless:dev
 ```
 
-## 📊 Outputs
+## Variaveis uteis
 
-Após o deploy, o CDK exibe:
-- **ApiFaturamentoUrl**: URL da API de faturamento
-- **ApiEstoqueUrl**: URL da API de estoque
-- **CloudFrontUrl**: URL do frontend
-- **MainTableName**: Nome da tabela DynamoDB
+- `CDK_DEFAULT_ACCOUNT`
+- `CDK_DEFAULT_REGION`
+- `NFE_FRONTEND_ORIGIN`
 
-## 🧪 Testes
+`NFE_FRONTEND_ORIGIN` e usado para compor a allowlist de CORS e o dominio esperado do frontend no ambiente.
 
-```bash
-# Testes unitários CDK
-npm test
+## Arquitetura provisionada
 
-# Snapshot tests
-npm run test -- -u
+```text
+CloudFront + S3
+        |
+        v
+API Gateway + Lambda Authorizer
+   |                     |
+   |                     +--> Cognito
+   |
+   +--> Lambda Faturamento (Go)
+   +--> Lambda Estoque (.NET 8)
+   +--> Lambda Estoque Consumer (Go)
+   +--> Lambda PDF (Go)
+   +--> Lambda Outbox Publisher (.NET 8)
+
+DynamoDB main table
+DynamoDB events table + Streams
+EventBridge
+SQS + DLQ
+CloudWatch Alarms + Dashboard
+X-Ray tracing
 ```
 
-## 📝 Estrutura
+## Outputs relevantes
 
-```
-cdk/
-├── bin/                    # Entry points
-│   └── nfe-infra-serverless.ts
-├── lib/
-│   ├── aspects/           # Cost guardrails
-│   ├── config/            # Environment configs
-│   └── stacks/            # CloudFormation stacks
-│       ├── database-dynamodb-stack.ts
-│       ├── compute-stack-serverless.ts
-│       ├── messaging-stack-serverless.ts
-│       └── frontend-stack-serverless.ts
-├── cdk.json              # CDK configuration
-└── package.json          # Dependencies
-```
+O stack expoe outputs usados pelos workflows e pelo frontend:
 
-## 🔒 Segurança
+- `ApiFaturamentoUrl`
+- `ApiEstoqueUrl`
+- `CloudFrontUrl`
+- `BucketName`
+- `DistributionId`
+- `UserPoolId`
+- `UserPoolClientId`
+- `ObservabilityDashboardName`
 
-- ✅ **Secrets Manager**: Credenciais criptografadas
-- ✅ **IAM Least Privilege**: Roles específicas por função
-- ✅ **VPC Security Groups**: Isolamento de rede (quando aplicável)
-- ✅ **API Gateway Throttling**: Rate limiting
-- ✅ **CloudFront SSL**: HTTPS obrigatório
+## Observabilidade provisionada
 
-## 💰 FinOps
+Hoje a infra gera:
 
-### Cost Optimization Features
+- tracing em API Gateway e Lambdas;
+- alarmes para erros das Lambdas principais;
+- alarmes de latencia p95 das APIs;
+- alarme para mensagens na DLQ;
+- dashboard `nfe-observability-<env>`.
 
-1. **On-Demand Pricing**: Lambda e DynamoDB escaláveis
-2. **No NAT Gateway**: Lambda fora da VPC
-3. **Short Log Retention**: 1 dia em dev
-4. **RDS Scheduler**: Database apenas horário comercial
-5. **Free Tier Maximizado**: 100% dos serviços elegíveis
+O proximo passo natural e enriquecer isso com metricas de negocio e tracing distribuido fim a fim com convencoes de span mais fortes.
 
-### Monitoramento de Custos
+## Seguranca aplicada
 
-```bash
-# Ver custo atual
-aws ce get-cost-and-usage \
-  --time-period Start=$(date -d '1 month ago' +%Y-%m-%d),End=$(date +%Y-%m-%d) \
-  --granularity MONTHLY \
-  --metrics UnblendedCost
+- Lambda Authorizer baseado em Cognito.
+- CORS por allowlist explicita.
+- exposicao de `X-Correlation-Id` nas respostas da API.
+- IAM least privilege por Lambda.
+- assets de frontend e APIs desacoplados por stack outputs, sem URLs fixas no codigo.
 
-# Kill switch (emergência)
-../../scripts/aws-cost-kill-switch.sh --execute
-```
+## Legado
 
-## 📖 Documentação Adicional
+O diretorio `lib/stacks` ainda contem stacks antigas de uma fase com ECS/RDS/RabbitMQ. Elas nao sao referenciadas pelo app `bin/nfe-infra-serverless.ts` e foram mantidas apenas como historico. Para deploy e manutencao, ignore:
 
-- [Arquitetura Completa](/infra/ARCHITECTURE_DIAGRAM.md)
-- [Comparação ECS vs Lambda](/infra/COMPARISON_ECS_VS_LAMBDA.md)
-- [Checklist Pre-Deploy](/infra/PRE_DEPLOY_CHECKLIST.md)
+- `compute-stack.ts`
+- `database-stack.ts`
+- `database-stack-serverless.ts`
+- `loadbalancer-stack.ts`
+- `messaging-stack.ts`
+- `secrets-stack.ts`
 
-## 🤝 Contribuindo
+Priorize sempre:
 
-1. Testar mudanças: `npm run cdk diff`
-2. Validar cost impact antes do merge
-3. Manter cost guardrails ativos
-4. Documentar outputs de novas stacks
-
----
-
-**Stack desenvolvida com AWS CDK + TypeScript + FinOps best practices**
+- `database-dynamodb-stack.ts`
+- `messaging-stack-serverless.ts`
+- `compute-stack-serverless.ts`
+- `frontend-stack.ts`
+- `auth-stack.ts`

@@ -9,29 +9,37 @@ mkdir -p "$GOPATH"
 
 cd /mnt/d/Programacao/Emissao_NFE/servico-faturamento
 
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -ldflags="-s -w" -o build/bootstrap ./cmd/lambda/
+mkdir -p build build-pdf build-estoque-consumer
 
-cd build
-if command -v zip >/dev/null 2>&1; then
-  zip -r ../lambda-faturamento.zip bootstrap
-else
-  python3 - <<'PY'
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -tags lambda.norpc \
+  -ldflags="-s -w" \
+  -o build/bootstrap \
+  ./cmd/lambda/main.go
+
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -tags lambda.norpc \
+  -ldflags="-s -w" \
+  -o build-pdf/bootstrap \
+  ./cmd/lambda-pdf/main.go
+
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -tags lambda.norpc \
+  -ldflags="-s -w" \
+  -o build-estoque-consumer/bootstrap \
+  ./cmd/lambda-estoque-consumer/main.go
+
+for artifact_dir in build build-pdf build-estoque-consumer; do
+  cd "/mnt/d/Programacao/Emissao_NFE/servico-faturamento/${artifact_dir}"
+
+  zip_name="../${artifact_dir}.zip"
+  if command -v zip >/dev/null 2>&1; then
+    zip -r "$zip_name" bootstrap
+  else
+    python3 - <<PY
 import zipfile
-with zipfile.ZipFile('../lambda-faturamento.zip', 'w', compression=zipfile.ZIP_DEFLATED) as z:
-    z.write('bootstrap')
+with zipfile.ZipFile('${zip_name}', 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.write('bootstrap')
 PY
-fi
-
-cd ..
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -ldflags="-s -w" -o build-outbox/bootstrap ./cmd/lambda-outbox/
-
-cd build-outbox
-if command -v zip >/dev/null 2>&1; then
-  zip -r ../lambda-outbox.zip bootstrap
-else
-  python3 - <<'PY'
-import zipfile
-with zipfile.ZipFile('../lambda-outbox.zip', 'w', compression=zipfile.ZIP_DEFLATED) as z:
-    z.write('bootstrap')
-PY
-fi
+  fi
+done

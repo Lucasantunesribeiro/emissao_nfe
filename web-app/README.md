@@ -1,262 +1,111 @@
-# 🚀 Frontend Angular - Sistema de Emissão de Notas Fiscais
+# Web App
 
-Sistema web para gerenciamento de produtos e emissão de notas fiscais eletrônicas integrado com backend Go (Faturamento) e .NET (Estoque).
+Frontend Angular 19 do sistema `Emissao NFe`. A aplicacao consome as APIs de faturamento e estoque, integra autenticacao Cognito com Amplify e injeta `correlation-id` em todas as chamadas HTTP.
 
-## 📦 Stack Tecnológica
+## O que esta ativo
 
-- **Angular:** 17.3
-- **TypeScript:** 5.4
-- **Tailwind CSS:** 3.4
-- **RxJS:** 7.8
-- **Standalone Components:** Sim (sem modules)
-- **Signals:** Sim (Angular 17+)
+- Angular 19 com standalone components e `provideHttpClient`.
+- Runtime config carregado em `APP_INITIALIZER`.
+- Autenticacao Cognito ativa em `AuthService`, `authGuard` e `authInterceptor`.
+- Interceptor de correlacao para facilitar rastreabilidade no backend.
+- Build desacoplado de URLs fixas: o arquivo `src/assets/config/app-config.json` e gerado a partir de variaveis de ambiente.
 
-## 🏗️ Arquitetura
+## Estrutura relevante
 
-```
-src/
-├── app/
-│   ├── core/
-│   │   ├── interceptors/         # HTTP interceptors (error, loading)
-│   │   ├── models/               # TypeScript interfaces
-│   │   └── services/             # Services (produtos, notas, idempotência)
-│   ├── features/
-│   │   ├── produtos/             # Feature de produtos
-│   │   └── notas/                # Feature de notas fiscais
-│   ├── shared/
-│   │   └── components/loading/   # Componentes reutilizáveis
-│   ├── app.component.ts          # Root component
-│   ├── app.config.ts             # App config (providers)
-│   └── app.routes.ts             # Rotas
-└── environments/
-    ├── environment.ts            # Dev (docker-compose)
-    └── environment.prod.ts       # Produção (AWS)
+```text
+src/app/core/config/         runtime config e carregamento inicial
+src/app/core/services/       AuthService, ProdutoService, NotaFiscalService
+src/app/core/guards/         protecao de rotas publicas e autenticadas
+src/app/core/interceptors/   auth, correlation-id, loading, tratamento de erro
+src/app/features/auth/       login, cadastro, confirmacao e reset de senha
+src/app/features/notas/      telas de notas
+src/app/features/produtos/   telas de produtos
+src/assets/config/           config de exemplo e config gerada em build
+scripts/generate-runtime-config.mjs
 ```
 
-## 🛠️ Desenvolvimento Local
+## Configuracao de runtime
 
-### Pré-requisitos
-- Node.js 22+
-- Docker + Docker Compose (para backend)
+O frontend nao depende mais de URLs hardcoded em `environment.ts`. Antes de `start`, `test` e `build`, o script `scripts/generate-runtime-config.mjs` gera `src/assets/config/app-config.json`.
 
-### Instalação
+Variaveis suportadas:
+
+- `API_ESTOQUE_URL`
+- `API_FATURAMENTO_URL`
+- `AUTH_ENABLED`
+- `COGNITO_REGION`
+- `COGNITO_USER_POOL_ID`
+- `COGNITO_USER_POOL_CLIENT_ID`
+- `ENABLE_CORRELATION_ID`
+- `APP_ENVIRONMENT_NAME`
+
+Exemplo:
+
 ```bash
-# Instalar dependências
+set API_ESTOQUE_URL=https://api-estoque.example.com
+set API_FATURAMENTO_URL=https://api-faturamento.example.com
+set AUTH_ENABLED=true
+set COGNITO_REGION=us-east-1
+set COGNITO_USER_POOL_ID=us-east-1_example
+set COGNITO_USER_POOL_CLIENT_ID=exampleclientid
+npm run build:prod
+```
+
+## Desenvolvimento local
+
+### Pre-requisitos
+
+- Node.js 22+
+- npm 10+
+
+### Instalar e rodar
+
+```bash
 npm ci
-
-# Iniciar ambiente completo (backend + frontend)
-docker-compose up -d
-
-# OU apenas frontend (se backend já estiver rodando)
 npm start
 ```
 
-**URLs Locais:**
-- Frontend: http://localhost:4200
-- API Estoque (.NET): http://localhost:5001
-- API Faturamento (Go): http://localhost:5002
+Por padrao, o `app-config.example.json` aponta para:
 
-### Scripts Disponíveis
+- `http://localhost:4200/api/estoque`
+- `http://localhost:4200/api/faturamento`
 
-```bash
-npm start              # Dev server (porta 4200)
-npm run build          # Build dev
-npm run build:prod     # Build produção (otimizado)
-npm run watch          # Build contínuo (dev)
-npm run analyze        # Análise de bundle size
-```
+Isso permite usar proxy local ou uma camada de API unificada sem recompilar o app.
 
-## 🚀 Deploy em Produção
-
-### Opção 1: AWS S3 + CloudFront (Recomendado)
+## Testes e build
 
 ```bash
-# Configurar variáveis de ambiente
-export S3_BUCKET="nfe-web-app-prod"
-export CLOUDFRONT_DISTRIBUTION_ID="E1234567890ABC"
-
-# Deploy automatizado
-./deploy-s3.sh
-```
-
-**Veja:** [DEPLOY.md](./DEPLOY.md) para instruções detalhadas
-
-### Opção 2: Docker + nginx
-
-```bash
-# Build imagem
-docker build -t nfe-web-app:latest .
-
-# Executar
-docker run -d -p 80:80 nfe-web-app:latest
-```
-
-## 🧪 Validação
-
-Antes de fazer deploy, execute o checklist:
-
-```bash
-# Build de produção
+npm run test:ci
 npm run build:prod
-
-# Validar environment
-grep -r "production: true" dist/web-app/browser/*.js
-
-# Validar tamanho (deve ser < 1.5MB)
-du -sh dist/web-app/browser/
+npm audit --omit=dev --audit-level=high
 ```
 
-**Veja:** [CHECKLIST.md](./CHECKLIST.md) para validação completa
+Estado atual:
 
-## 🔧 Configuração de Ambiente
+- testes unitarios ativos para `NotaFiscalService` e guards de autenticacao;
+- build de producao validado em Angular 19;
+- auditoria de dependencias sem vulnerabilidades `high` em producao.
 
-### Desenvolvimento (`environment.ts`)
-```typescript
-export const environment = {
-  production: false,
-  apiEstoqueUrl: '/api/estoque',      // Proxy para localhost:5001
-  apiFaturamentoUrl: '/api/faturamento' // Proxy para localhost:5002
-};
-```
+## Autenticacao
 
-### Produção (`environment.prod.ts`)
-```typescript
-export const environment = {
-  production: true,
-  apiEstoqueUrl: '/api/v1/estoque',      // CloudFront → ALB
-  apiFaturamentoUrl: '/api/v1/faturamento' // CloudFront → ALB
-};
-```
+O fluxo de autenticacao usa Amplify v6:
 
-## 📡 Integração com APIs
+1. `RuntimeConfigService` carrega `userPoolId`, `clientId` e `region`.
+2. `AuthService.initialize()` configura o Amplify e tenta reidratar a sessao.
+3. `authGuard` bloqueia rotas privadas.
+4. `authInterceptor` injeta o JWT nas chamadas autenticadas.
+5. `correlationIdInterceptor` adiciona `X-Correlation-Id`.
 
-### Serviços Disponíveis
+Se `AUTH_ENABLED=false`, o frontend entra em modo sem Cognito e as rotas protegidas nao sao consideradas autenticadas.
 
-- **ProdutoService:** CRUD de produtos (API Estoque .NET)
-- **NotaFiscalService:** Gestão das notas fiscais (API Faturamento Go)
-- **IdempotenciaService:** Geração de chaves de idempotência
+## Deploy
 
-### Interceptors
+O deploy principal acontece pelos workflows do GitHub. Eles leem os outputs do CloudFormation, exportam variaveis como `API_ESTOQUE_URL`, `API_FATURAMENTO_URL`, `COGNITO_USER_POOL_ID` e `COGNITO_USER_POOL_CLIENT_ID`, geram o `app-config.json` e publicam o bundle no S3/CloudFront.
 
-- **LoadingInterceptor:** Loading overlay global automático
-- **HttpErrorInterceptor:** Tratamento de erros HTTP com mensagens amigáveis
+Para publicacao manual, basta gerar o build com as variaveis corretas e sincronizar `dist/web-app/browser` no bucket configurado.
 
-### Exemplo de Uso
-```typescript
-import { inject } from '@angular/core';
-import { NotaFiscalService } from '@core/services/nota-fiscal.service';
+## Limites atuais
 
-export class MinhaFeature {
-  private notaService = inject(NotaFiscalService);
-
-  listarNotas() {
-    // Loading automático via interceptor
-    this.notaService.listarNotas('PENDENTE').subscribe({
-      next: (notas) => console.log(notas),
-      error: (err) => {
-        // Erro já tratado pelo interceptor
-        // Mensagem amigável exibida automaticamente
-      }
-    });
-  }
-}
-```
-
-## 🎨 Estilização
-
-### Tailwind CSS
-Configuração em `tailwind.config.js`. Classes utilitárias disponíveis:
-
-```html
-<!-- Exemplo de componente -->
-<div class="flex items-center gap-4 p-6 bg-white rounded-lg shadow-md">
-  <button class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition">
-    Ação
-  </button>
-</div>
-```
-
-### Responsividade
-Mobile-first com breakpoints:
-- `sm:` 640px
-- `md:` 768px
-- `lg:` 1024px
-- `xl:` 1280px
-
-## 🔒 Segurança
-
-- **HTTPS:** Obrigatório em produção (CloudFront)
-- **CORS:** Configurado no backend (ALB)
-- **Environment Isolation:** Produção isolada de desenvolvimento
-- **No Secrets:** Sem credenciais hardcoded
-
-## 📊 Performance
-
-### Budgets (angular.json)
-- Initial bundle: < 1.5MB (warning), < 2MB (error)
-- Component styles: < 4KB (warning), < 8KB (error)
-
-### Otimizações Aplicadas
-- ✅ AOT Compilation
-- ✅ Build Optimizer
-- ✅ Tree Shaking
-- ✅ Code Splitting
-- ✅ Minification
-- ✅ Gzip/Brotli (nginx/CloudFront)
-
-### Targets
-- First Contentful Paint: < 1.5s
-- Time to Interactive: < 3s
-- Lighthouse Performance: > 90
-
-## 🐛 Troubleshooting
-
-### Build falha com erro de budget
-```bash
-# Analisar bundle
-npm run analyze
-
-# Ajustar budgets em angular.json se necessário
-```
-
-### APIs retornam 404 em produção
-- Verificar behavior `/api/*` no CloudFront
-- Confirmar origin ALB configurado
-- Testar diretamente no ALB (bypass CloudFront)
-
-### Loading não aparece
-- Verificar `LoadingComponent` importado no `app.component.ts`
-- Verificar interceptors registrados no `app.config.ts`
-
-### Environment errado em build
-```bash
-# Validar replacement no angular.json
-grep -A 5 "fileReplacements" angular.json
-
-# Confirmar build:prod usa configuration production
-npm run build:prod -- --verbose
-```
-
-## 📚 Documentação Adicional
-
-- [DEPLOY.md](./DEPLOY.md) - Guia completo de deploy AWS
-- [CHECKLIST.md](./CHECKLIST.md) - Checklist de validação pré-deploy
-- [proxy.conf.json](./proxy.conf.json) - Configuração de proxy dev
-- [nginx.conf](./nginx.conf) - Configuração nginx (Docker)
-
-## 🤝 Contribuição
-
-1. Feature/bugfix em branch separado
-2. Build local sem erros
-3. Testar integração com backend
-4. Pull request com descrição clara
-
-## 📞 Suporte
-
-- **Tech Lead:** [Seu Nome]
-- **DevOps:** [Nome DevOps]
-- **Slack:** #nfe-sistema
-
-## 📄 Licença
-
-Propriedade de Sistema de Emissão de NFe - Uso interno apenas
+- O app e Angular, nao React/Next.js. Se o alvo principal for Fullstack .NET + React, ainda faz sentido manter uma variante React no portfolio.
+- A experiencia cobre login, cadastro, confirmacao e reset, mas nao ha um fluxo de SSO corporativo ou MFA customizado.
+- Nao existem dashboards de produto ou telemetria visual no frontend; a observabilidade esta mais forte no backend/infra.
