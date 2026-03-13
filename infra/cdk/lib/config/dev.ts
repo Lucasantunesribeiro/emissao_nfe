@@ -81,7 +81,7 @@ export const devConfig = {
   },
 
   // CORS Configuration
-  cloudFrontDomain: 'https://d1gdw7rlsi8u42.cloudfront.net',
+  cloudFrontDomain: process.env.NFE_FRONTEND_ORIGIN ?? 'http://localhost:4200',
 
   // CloudWatch Alarms Configuration
   alarms: {

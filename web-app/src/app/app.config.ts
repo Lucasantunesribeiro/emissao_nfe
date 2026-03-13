@@ -1,26 +1,20 @@
-import { ApplicationConfig, provideZoneChangeDetection, APP_INITIALIZER } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { APP_INITIALIZER, ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { provideRouter } from '@angular/router';
 import { routes } from './app.routes';
+import { RuntimeConfigService } from './core/config/runtime-config.service';
+import { AuthService } from './core/services/auth.service';
+import { authInterceptor } from './core/interceptors/auth.interceptor';
+import { correlationIdInterceptor } from './core/interceptors/correlation-id.interceptor';
 import { httpErrorInterceptor } from './core/interceptors/http-error.interceptor';
 import { loadingInterceptor } from './core/interceptors/loading.interceptor';
-// import { authInterceptor } from './core/interceptors/auth.interceptor';
-// import { Amplify } from 'aws-amplify';
-// import { environment } from '../environments/environment';
 
-// TODO: Autenticação será implementada posteriormente
-// export function initializeAmplify() {
-//   return () => {
-//     Amplify.configure({
-//       Auth: {
-//         Cognito: {
-//           userPoolId: environment.cognitoUserPoolId,
-//           userPoolClientId: environment.cognitoClientId,
-//         }
-//       }
-//     });
-//   };
-// }
+function initializeApplication(runtimeConfig: RuntimeConfigService, authService: AuthService) {
+  return async () => {
+    await runtimeConfig.load();
+    await authService.initialize();
+  };
+}
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -28,16 +22,17 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes),
     provideHttpClient(
       withInterceptors([
-        // authInterceptor,        // TODO: Habilitar quando implementar autenticação
-        loadingInterceptor,     // PRIMEIRO: Loading spinner
-        httpErrorInterceptor    // SEGUNDO: Tratamento de erros
+        correlationIdInterceptor,
+        authInterceptor,
+        loadingInterceptor,
+        httpErrorInterceptor,
       ])
     ),
-    // TODO: Habilitar quando implementar autenticação
-    // {
-    //   provide: APP_INITIALIZER,
-    //   useFactory: initializeAmplify,
-    //   multi: true
-    // }
-  ]
+    {
+      provide: APP_INITIALIZER,
+      useFactory: initializeApplication,
+      deps: [RuntimeConfigService, AuthService],
+      multi: true,
+    },
+  ],
 };

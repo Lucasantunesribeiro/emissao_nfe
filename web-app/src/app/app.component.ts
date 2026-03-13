@@ -1,8 +1,10 @@
-import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Component, computed, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { RuntimeConfigService } from './core/config/runtime-config.service';
+import { AuthService } from './core/services/auth.service';
 import { LoadingComponent } from './shared/components/loading/loading.component';
-import { environment } from '../environments/environment';
 
 @Component({
   selector: 'app-root',
@@ -29,7 +31,8 @@ import { environment } from '../environments/environment';
                   <h1 class="text-2xl font-display text-gray-900">Estúdio Fiscal</h1>
                 </div>
               </div>
-              <nav class="flex flex-wrap gap-2">
+
+              <nav class="flex flex-wrap gap-2" *ngIf="showNavigation()">
                 <a routerLink="/produtos"
                    routerLinkActive="nav-link-active"
                    [routerLinkActiveOptions]="{exact: false}"
@@ -43,9 +46,15 @@ import { environment } from '../environments/environment';
                   Notas Fiscais
                 </a>
               </nav>
-              <div class="hidden lg:flex items-center gap-2">
+
+              <div class="flex items-center gap-2 flex-wrap justify-end">
                 <span class="tag bg-orange-100 text-orange-800">Ambiente {{ environmentName }}</span>
                 <span class="tag bg-emerald-100 text-emerald-800">EventBridge ativo</span>
+                <span *ngIf="!authEnabled" class="tag bg-amber-100 text-amber-800">Auth local desabilitada</span>
+                <span *ngIf="currentUser()" class="tag bg-sky-100 text-sky-800">{{ currentUser()?.email }}</span>
+                <button *ngIf="authEnabled && currentUser()" type="button" class="btn-ghost" (click)="logout()">
+                  Sair
+                </button>
               </div>
             </div>
           </div>
@@ -55,15 +64,15 @@ import { environment } from '../environments/environment';
           <div class="hero-card p-6 md:p-10 animate-fade-up">
             <div class="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
               <div class="space-y-4">
-                <span class="tag bg-sky-100 text-sky-800">Operacao serverless</span>
+                <span class="tag bg-sky-100 text-sky-800">Operação serverless</span>
                 <h2 class="text-4xl md:text-5xl font-display text-gray-900">
-                  Sistema de Emissão de Notas Fiscais com estoque orquestrado e visao em tempo real.
+                  Sistema de emissão de notas com estoque orquestrado e rastreabilidade ponta a ponta.
                 </h2>
                 <p class="text-base text-gray-600 max-w-xl">
-                  Gerencie produtos, acompanhe o ciclo completo da nota e monitore o processamento de impressao
-                  com respostas claras e confiaveis.
+                  Gerencie produtos, acompanhe o ciclo completo da nota, autentique usuários com Cognito
+                  e monitore o processamento assíncrono com correlation-id.
                 </p>
-                <div class="flex flex-wrap gap-3">
+                <div class="flex flex-wrap gap-3" *ngIf="showNavigation()">
                   <a routerLink="/notas" class="btn-primary">Criar nota fiscal</a>
                   <a routerLink="/produtos" class="btn-secondary">Ver estoque</a>
                 </div>
@@ -71,13 +80,13 @@ import { environment } from '../environments/environment';
               <div class="grid gap-4">
                 <div class="panel-soft p-4">
                   <p class="text-sm text-gray-500">Pipeline</p>
-                  <h3 class="text-xl font-display text-gray-900">Reserva, fechamento e impressao</h3>
-                  <p class="text-sm text-gray-600 mt-2">Eventos sincronizados via outbox e EventBridge.</p>
+                  <h3 class="text-xl font-display text-gray-900">Reserva, fechamento e impressão</h3>
+                  <p class="text-sm text-gray-600 mt-2">Eventos sincronizados via outbox, EventBridge e consumidores assíncronos.</p>
                 </div>
                 <div class="panel-soft p-4">
                   <p class="text-sm text-gray-500">Observabilidade</p>
-                  <h3 class="text-xl font-display text-gray-900">Logs estruturados prontos para CloudWatch</h3>
-                  <p class="text-sm text-gray-600 mt-2">Saidas JSON padronizadas para auditoria.</p>
+                  <h3 class="text-xl font-display text-gray-900">JWT, correlation-id e logs estruturados</h3>
+                  <p class="text-sm text-gray-600 mt-2">Pronto para rastrear requisições entre frontend, APIs e workers.</p>
                 </div>
               </div>
             </div>
@@ -89,16 +98,27 @@ import { environment } from '../environments/environment';
         </main>
 
         <footer class="container mx-auto px-4 pb-10 text-sm text-gray-500 flex flex-wrap items-center justify-between gap-2">
-          <span>Sistema de Emissão de Notas Fiscais - Operacao segura e resiliente.</span>
-          <span>API Gateway + Lambda + Postgres</span>
+          <span>Sistema de Emissão de Notas Fiscais com autenticação Cognito e saga orientada a eventos.</span>
+          <span>API Gateway + Lambda + DynamoDB</span>
         </footer>
       </div>
 
-      <!-- Loading overlay global -->
       <app-loading />
     </div>
-  `
+  `,
 })
 export class AppComponent {
-  readonly environmentName = environment.production ? 'Prod' : 'Dev';
+  private readonly authService = inject(AuthService);
+  private readonly runtimeConfig = inject(RuntimeConfigService);
+
+  readonly currentUser = toSignal(this.authService.currentUser$, { initialValue: null });
+  readonly authEnabled = this.authService.isEnabled();
+  readonly environmentName = this.runtimeConfig.value.ui.environmentName;
+  readonly showNavigation = computed(() => !this.authEnabled || !!this.currentUser());
+
+  logout(): void {
+    this.authService.logout().subscribe({
+      error: () => undefined,
+    });
+  }
 }

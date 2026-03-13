@@ -269,7 +269,7 @@ func (r *RepositorioDynamoDB) AdicionarItem(ctx context.Context, item *dominio.I
 }
 
 // FecharNota closes a nota using DynamoDB transaction
-func (r *RepositorioDynamoDB) FecharNota(ctx context.Context, notaID uuid.UUID) error {
+func (r *RepositorioDynamoDB) FecharNota(ctx context.Context, notaID uuid.UUID, correlationID string) error {
 	now := time.Now()
 
 	// Transaction: Update nota status + Create outbox event
@@ -304,7 +304,7 @@ func (r *RepositorioDynamoDB) FecharNota(ctx context.Context, notaID uuid.UUID) 
 						"TTL":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Add(7*24*time.Hour).Unix())},
 						"TipoEvento":  &types.AttributeValueMemberS{Value: "Faturamento.NotaFechada"},
 						"IdAgregado":  &types.AttributeValueMemberS{Value: notaID.String()},
-						"Payload":     &types.AttributeValueMemberS{Value: fmt.Sprintf(`{"notaId":"%s","timestamp":"%s"}`, notaID.String(), now.Format(time.RFC3339))},
+						"Payload":     &types.AttributeValueMemberS{Value: fmt.Sprintf(`{"notaId":"%s","timestamp":"%s","correlationId":"%s"}`, notaID.String(), now.Format(time.RFC3339), correlationID)},
 						"DataOcorrencia": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
 					},
 				},
@@ -540,7 +540,7 @@ func (r *RepositorioDynamoDB) CriarSolicitacaoImpressao(ctx context.Context, sol
 }
 
 // PublicarEvento publishes an event to the events table (outbox pattern)
-func (r *RepositorioDynamoDB) PublicarEvento(ctx context.Context, tipoEvento string, idAgregado uuid.UUID, payload interface{}) error {
+func (r *RepositorioDynamoDB) PublicarEvento(ctx context.Context, tipoEvento string, idAgregado uuid.UUID, payload interface{}, correlationID string) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("error marshaling payload: %w", err)
@@ -557,6 +557,10 @@ func (r *RepositorioDynamoDB) PublicarEvento(ctx context.Context, tipoEvento str
 		"payload":         &types.AttributeValueMemberS{Value: string(payloadJSON)},
 		"data_ocorrencia": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
 		"TTL":             &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Add(7*24*time.Hour).Unix())},
+	}
+
+	if correlationID != "" {
+		item["correlation_id"] = &types.AttributeValueMemberS{Value: correlationID}
 	}
 
 	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{

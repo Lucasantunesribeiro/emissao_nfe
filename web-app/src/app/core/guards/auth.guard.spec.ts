@@ -12,7 +12,7 @@ describe('authGuard', () => {
 
     TestBed.configureTestingModule({
       providers: [
-        { provide: AuthService, useValue: { currentUser$: of(null) } },
+        { provide: AuthService, useValue: { currentUser$: of(null), isEnabled: () => true } },
         { provide: Router, useValue: routerMock },
       ],
     });
@@ -34,7 +34,7 @@ describe('authGuard', () => {
 
     TestBed.configureTestingModule({
       providers: [
-        { provide: AuthService, useValue: { currentUser$: of(user) } },
+        { provide: AuthService, useValue: { currentUser$: of(user), isEnabled: () => true } },
         { provide: Router, useValue: makeRouterMock() },
       ],
     });
@@ -47,19 +47,33 @@ describe('authGuard', () => {
       });
     });
   });
+
+  it('deve liberar rotas protegidas quando auth estiver desabilitada', () => {
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: AuthService, useValue: { currentUser$: of(null), isEnabled: () => false } },
+        { provide: Router, useValue: makeRouterMock() },
+      ],
+    });
+
+    TestBed.runInInjectionContext(() => {
+      const result = authGuard({} as any, { url: '/produtos' } as any);
+      expect(result).toBe(true);
+    });
+  });
 });
 
 describe('publicGuard', () => {
   it('deve permitir acesso quando não autenticado', (done) => {
     TestBed.configureTestingModule({
       providers: [
-        { provide: AuthService, useValue: { currentUser$: of(null) } },
+        { provide: AuthService, useValue: { currentUser$: of(null), isEnabled: () => true } },
         { provide: Router, useValue: makeRouterMock() },
       ],
     });
 
     TestBed.runInInjectionContext(() => {
-      const result$ = publicGuard({} as any, {} as any) as any;
+      const result$ = publicGuard({} as any, { url: '/login' } as any) as any;
       result$.subscribe((allowed: boolean) => {
         expect(allowed).toBe(true);
         done();
@@ -73,13 +87,13 @@ describe('publicGuard', () => {
 
     TestBed.configureTestingModule({
       providers: [
-        { provide: AuthService, useValue: { currentUser$: of(user) } },
+        { provide: AuthService, useValue: { currentUser$: of(user), isEnabled: () => true } },
         { provide: Router, useValue: routerMock },
       ],
     });
 
     TestBed.runInInjectionContext(() => {
-      const result$ = publicGuard({} as any, {} as any) as any;
+      const result$ = publicGuard({} as any, { url: '/login' } as any) as any;
       result$.subscribe((allowed: boolean) => {
         expect(allowed).toBe(false);
         expect(routerMock.navigate).toHaveBeenCalledWith(['/produtos']);

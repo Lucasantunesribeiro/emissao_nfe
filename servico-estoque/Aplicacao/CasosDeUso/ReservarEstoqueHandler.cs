@@ -13,17 +13,20 @@ public sealed class ReservarEstoqueHandler
     private readonly IRepositorioReservas _repoReservas;
     private readonly IRepositorioEventos _repoEventos;
     private readonly ILogger<ReservarEstoqueHandler> _logger;
+    private readonly ICorrelationContextAccessor _correlationContextAccessor;
 
     public ReservarEstoqueHandler(
         IRepositorioProdutos repoProdutos,
         IRepositorioReservas repoReservas,
         IRepositorioEventos repoEventos,
-        ILogger<ReservarEstoqueHandler> logger)
+        ILogger<ReservarEstoqueHandler> logger,
+        ICorrelationContextAccessor correlationContextAccessor)
     {
         _repoProdutos = repoProdutos;
         _repoReservas = repoReservas;
         _repoEventos = repoEventos;
         _logger = logger;
+        _correlationContextAccessor = correlationContextAccessor;
     }
 
     public async Task<Resultado<ReservaEstoque>> Executar(
@@ -46,13 +49,15 @@ public sealed class ReservarEstoqueHandler
 
                 var payloadRejeicao = new EventoReservaRejeitadaPayload(
                     cmd.NotaId,
-                    resultDebito.Mensagem ?? "Falha ao reservar estoque");
+                    resultDebito.Mensagem ?? "Falha ao reservar estoque",
+                    _correlationContextAccessor.CorrelationId);
 
                 var eventoRejeicao = new EventoOutbox
                 {
                     Id = 0,
                     TipoEvento = "Estoque.ReservaRejeitada",
                     IdAgregado = cmd.NotaId,
+                    CorrelationId = _correlationContextAccessor.CorrelationId,
                     Payload = JsonSerializer.Serialize(
                         payloadRejeicao,
                         AppJsonSerializerContext.Default.EventoReservaRejeitadaPayload),
@@ -88,12 +93,16 @@ public sealed class ReservarEstoqueHandler
                 new(cmd.ProdutoId, cmd.Quantidade)
             };
 
-            var payloadSucesso = new EventoReservaSucessoPayload(cmd.NotaId, itensPayload);
+            var payloadSucesso = new EventoReservaSucessoPayload(
+                cmd.NotaId,
+                itensPayload,
+                _correlationContextAccessor.CorrelationId);
             var evento = new EventoOutbox
             {
                 Id = 0,
                 TipoEvento = "Estoque.Reservado",
                 IdAgregado = cmd.NotaId,
+                CorrelationId = _correlationContextAccessor.CorrelationId,
                 Payload = JsonSerializer.Serialize(
                     payloadSucesso,
                     AppJsonSerializerContext.Default.EventoReservaSucessoPayload),
@@ -179,12 +188,14 @@ public sealed class ReservarEstoqueHandler
                 .Select(i => new EventoReservaItemPayload(i.ProdutoId, i.Quantidade))
                 .ToList();
             var payloadLote = new EventoReservaSucessoPayload(cmd.NotaId, itensLote);
+            payloadLote = payloadLote with { CorrelationId = _correlationContextAccessor.CorrelationId };
 
             var eventoSucesso = new EventoOutbox
             {
                 Id = 0,
                 TipoEvento = "Estoque.Reservado",
                 IdAgregado = cmd.NotaId,
+                CorrelationId = _correlationContextAccessor.CorrelationId,
                 Payload = JsonSerializer.Serialize(
                     payloadLote,
                     AppJsonSerializerContext.Default.EventoReservaSucessoPayload),
@@ -214,12 +225,16 @@ public sealed class ReservarEstoqueHandler
     {
         try
         {
-            var payloadRejeicao = new EventoReservaRejeitadaPayload(notaId, motivo);
+            var payloadRejeicao = new EventoReservaRejeitadaPayload(
+                notaId,
+                motivo,
+                _correlationContextAccessor.CorrelationId);
             var evt = new EventoOutbox
             {
                 Id = 0,
                 TipoEvento = "Estoque.ReservaRejeitada",
                 IdAgregado = notaId,
+                CorrelationId = _correlationContextAccessor.CorrelationId,
                 Payload = JsonSerializer.Serialize(
                     payloadRejeicao,
                     AppJsonSerializerContext.Default.EventoReservaRejeitadaPayload),

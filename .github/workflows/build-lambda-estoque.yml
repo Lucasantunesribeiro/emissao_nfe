@@ -1,13 +1,14 @@
-name: Build Lambda Estoque (manual)
-# Este workflow existe apenas para build manual isolado.
-# O deploy automático do Lambda Estoque está em deploy-dev.yml
+name: Build Lambdas Estoque (manual)
 
 on:
   workflow_dispatch:
 
+env:
+  AWS_REGION: us-east-1
+
 jobs:
   build:
-    name: Build e Deploy manual – Lambda Estoque
+    name: Build and Deploy manual - Estoque API + Outbox Publisher
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -18,9 +19,9 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: "8.0.x"
 
-      - name: Publish (.NET 8 managed runtime – linux-x64)
+      - name: Publish - Estoque API
         run: |
           dotnet publish ServicoEstoque.csproj \
             -c Release \
@@ -28,29 +29,50 @@ jobs:
             --self-contained false \
             -o lambda-publish
 
-      - name: Create ZIP
+      - name: Package - Estoque API
         run: |
           cd lambda-publish
           zip -r ../lambda-estoque-${{ github.sha }}.zip .
+
+      - name: Publish - Outbox Publisher
+        run: |
+          dotnet publish OutboxPublisher/OutboxPublisher.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o OutboxPublisher/publish
+
+      - name: Package - Outbox Publisher
+        run: |
+          cd OutboxPublisher/publish
+          zip -r ../../lambda-outbox-publisher-${{ github.sha }}.zip .
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy – nfe-estoque-dev
+      - name: Deploy - nfe-estoque-dev
         run: |
           aws lambda update-function-code \
             --function-name nfe-estoque-dev \
             --zip-file fileb://lambda-estoque-${{ github.sha }}.zip
           aws lambda wait function-updated --function-name nfe-estoque-dev
-          echo "nfe-estoque-dev updated"
 
-      - name: Upload artifact
+      - name: Deploy - nfe-outbox-publisher-dev
+        run: |
+          aws lambda update-function-code \
+            --function-name nfe-outbox-publisher-dev \
+            --zip-file fileb://lambda-outbox-publisher-${{ github.sha }}.zip
+          aws lambda wait function-updated --function-name nfe-outbox-publisher-dev
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: lambda-estoque-${{ github.sha }}
-          path: servico-estoque/lambda-estoque-${{ github.sha }}.zip
+          name: lambda-estoque-bundle-${{ github.sha }}
+          path: |
+            servico-estoque/lambda-estoque-${{ github.sha }}.zip
+            servico-estoque/lambda-outbox-publisher-${{ github.sha }}.zip
           retention-days: 7

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using ServicoEstoque.Aplicacao.CasosDeUso;
 using ServicoEstoque.Aplicacao.DTOs;
+using ServicoEstoque.Api;
 using ServicoEstoque.Dominio.Entidades;
 using ServicoEstoque.Infraestrutura.Persistencia;
 
@@ -14,12 +15,14 @@ public class ReservarEstoqueHandlerTests
     private readonly Mock<IRepositorioReservas> _repoReservas = new();
     private readonly Mock<IRepositorioEventos> _repoEventos = new();
     private readonly Mock<ILogger<ReservarEstoqueHandler>> _logger = new();
+    private readonly Mock<ICorrelationContextAccessor> _correlationContextAccessor = new();
 
     private ReservarEstoqueHandler CriarHandler() => new(
         _repoProdutos.Object,
         _repoReservas.Object,
         _repoEventos.Object,
-        _logger.Object);
+        _logger.Object,
+        _correlationContextAccessor.Object);
 
     [Fact]
     public async Task Executar_ComProdutoESaldoSuficiente_RetornaSucesso()

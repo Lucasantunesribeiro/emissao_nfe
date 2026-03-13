@@ -17,6 +17,7 @@ import (
 
 	"servico-faturamento/internal/dominio"
 	"servico-faturamento/internal/logger"
+	"servico-faturamento/internal/observability"
 	"servico-faturamento/internal/repositorio"
 )
 
@@ -50,31 +51,38 @@ func NewLambdaHandler() (*LambdaHandler, error) {
 
 // HandleRequest processa requisições API Gateway
 func (h *LambdaHandler) HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	slog.Info("Lambda invoked", "method", request.HTTPMethod, "path", request.Path)
+	correlationID := observability.GetOrCreateCorrelationID(request.Headers)
+	slog.Info(
+		"Lambda invoked",
+		"method", request.HTTPMethod,
+		"path", request.Path,
+		"requestId", request.RequestContext.RequestID,
+		"correlationId", correlationID,
+	)
 
-	origin := getHeaderValue(request.Headers, "Origin")
+	origin := observability.HeaderValue(request.Headers, "Origin")
 
 	if request.HTTPMethod == "OPTIONS" {
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusNoContent,
-			Headers:    corsHeaders(origin),
+			Headers:    corsHeaders(origin, correlationID),
 			Body:       "",
 		}, nil
 	}
 
 	if (request.Path == "/health" || request.Path == "/api/v1/health") && request.HTTPMethod == "GET" {
-		return h.handleHealthCheck(origin)
+		return h.handleHealthCheck(origin, correlationID)
 	}
 
 	switch {
 	case strings.HasPrefix(request.Path, "/api/v1/notas"):
-		return h.handleNotasRoutes(ctx, request, origin)
+		return h.handleNotasRoutes(ctx, request, origin, correlationID)
 	case strings.HasPrefix(request.Path, "/api/v1/solicitacoes-impressao"):
-		return h.handleSolicitacoesImpressaoRoutes(ctx, request, origin)
+		return h.handleSolicitacoesImpressaoRoutes(ctx, request, origin, correlationID)
 	default:
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusNotFound,
-			Headers:    corsHeaders(origin),
+			Headers:    corsHeaders(origin, correlationID),
 			Body:       `{"erro":"Not Found"}`,
 		}, nil
 	}
@@ -96,8 +104,9 @@ func (h *LambdaHandler) HandleSQSEvent(ctx context.Context, sqsEvent events.SQSE
 		}
 
 		var detail struct {
-			NotaID string `json:"notaId"`
-			Motivo string `json:"motivo"`
+			NotaID        string `json:"notaId"`
+			Motivo        string `json:"motivo"`
+			CorrelationID string `json:"correlationId"`
 		}
 		_ = json.Unmarshal(eb.Detail, &detail)
 
@@ -125,15 +134,15 @@ func (h *LambdaHandler) HandleSQSEvent(ctx context.Context, sqsEvent events.SQSE
 	return nil
 }
 
-func (h *LambdaHandler) handleHealthCheck(origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleHealthCheck(origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       `{"status":"healthy","service":"faturamento","database":"dynamodb","version":"3.0.0"}`,
 	}, nil
 }
 
-func (h *LambdaHandler) handleNotasRoutes(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleNotasRoutes(ctx context.Context, request events.APIGatewayProxyRequest, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	pathParts := strings.Split(strings.Trim(request.Path, "/"), "/")
 	var notaID string
 	var subresource string
@@ -147,55 +156,55 @@ func (h *LambdaHandler) handleNotasRoutes(ctx context.Context, request events.AP
 	switch request.HTTPMethod {
 	case "GET":
 		if notaID != "" && subresource == "" {
-			return h.handleGetNota(ctx, notaID, origin)
+			return h.handleGetNota(ctx, notaID, origin, correlationID)
 		}
-		return h.handleListNotas(ctx, request, origin)
+		return h.handleListNotas(ctx, request, origin, correlationID)
 
 	case "POST":
 		if notaID != "" && subresource == "itens" {
-			return h.handleAddItem(ctx, notaID, request, origin)
+			return h.handleAddItem(ctx, notaID, request, origin, correlationID)
 		}
 		if notaID != "" && subresource == "imprimir" {
-			return h.handleImprimirNota(ctx, notaID, request, origin)
+			return h.handleImprimirNota(ctx, notaID, request, origin, correlationID)
 		}
 		if notaID == "" {
-			return h.handleCreateNota(ctx, request, origin)
+			return h.handleCreateNota(ctx, request, origin, correlationID)
 		}
-		return errorResponse(http.StatusNotFound, "Rota não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Rota não encontrada", origin, correlationID), nil
 
 	case "PUT":
 		if notaID == "" {
-			return errorResponse(http.StatusBadRequest, "Nota ID required", origin), nil
+			return errorResponse(http.StatusBadRequest, "Nota ID required", origin, correlationID), nil
 		}
 		if subresource == "fechar" {
-			return h.handleFecharNota(ctx, notaID, origin)
+			return h.handleFecharNota(ctx, notaID, origin, correlationID)
 		}
-		return errorResponse(http.StatusNotFound, "Rota não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Rota não encontrada", origin, correlationID), nil
 
 	default:
-		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed", origin), nil
+		return errorResponse(http.StatusMethodNotAllowed, "Method not allowed", origin, correlationID), nil
 	}
 }
 
-func (h *LambdaHandler) handleCreateNota(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleCreateNota(ctx context.Context, request events.APIGatewayProxyRequest, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	var req struct {
 		Numero string `json:"numero"`
 	}
 
 	if err := json.Unmarshal([]byte(request.Body), &req); err != nil {
-		return errorResponse(http.StatusBadRequest, "Invalid JSON: "+err.Error(), origin), nil
+		return errorResponse(http.StatusBadRequest, "Invalid JSON: "+err.Error(), origin, correlationID), nil
 	}
 	if req.Numero == "" {
-		return errorResponse(http.StatusBadRequest, "Campo 'numero' é obrigatório", origin), nil
+		return errorResponse(http.StatusBadRequest, "Campo 'numero' é obrigatório", origin, correlationID), nil
 	}
 
 	existingNota, err := h.repo.BuscarPorNumero(ctx, req.Numero)
 	if err != nil {
 		slog.Error("Error checking existing nota", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao verificar nota existente", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao verificar nota existente", origin, correlationID), nil
 	}
 	if existingNota != nil {
-		return errorResponse(http.StatusConflict, "Número de nota já existe", origin), nil
+		return errorResponse(http.StatusConflict, "Número de nota já existe", origin, correlationID), nil
 	}
 
 	nota := &dominio.NotaFiscal{
@@ -206,61 +215,61 @@ func (h *LambdaHandler) handleCreateNota(ctx context.Context, request events.API
 
 	if err := h.repo.CriarNota(ctx, nota); err != nil {
 		slog.Error("Error creating nota", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Falha ao criar nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Falha ao criar nota", origin, correlationID), nil
 	}
 
 	body, _ := json.Marshal(nota)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusCreated,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}, nil
 }
 
-func (h *LambdaHandler) handleGetNota(ctx context.Context, notaIDStr string, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleGetNota(ctx context.Context, notaIDStr string, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	notaID, err := uuid.Parse(notaIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin, correlationID), nil
 	}
 
 	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil {
 		slog.Error("Error fetching nota", "id", notaID, "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin, correlationID), nil
 	}
 	if nota == nil {
-		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin, correlationID), nil
 	}
 
 	body, _ := json.Marshal(nota)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}, nil
 }
 
-func (h *LambdaHandler) handleListNotas(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleListNotas(ctx context.Context, request events.APIGatewayProxyRequest, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	status := request.QueryStringParameters["status"]
 
 	notas, err := h.repo.ListarNotas(ctx, status)
 	if err != nil {
 		slog.Error("Error listing notas", "status", status, "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao listar notas", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao listar notas", origin, correlationID), nil
 	}
 
 	body, _ := json.Marshal(notas)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}, nil
 }
 
-func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, request events.APIGatewayProxyRequest, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	notaID, err := uuid.Parse(notaIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin, correlationID), nil
 	}
 
 	var req struct {
@@ -270,40 +279,40 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 	}
 
 	if err := json.Unmarshal([]byte(request.Body), &req); err != nil {
-		return errorResponse(http.StatusBadRequest, "Invalid JSON", origin), nil
+		return errorResponse(http.StatusBadRequest, "Invalid JSON", origin, correlationID), nil
 	}
 
 	produtoID, err := uuid.Parse(req.ProdutoID)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ProdutoID inválido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ProdutoID inválido", origin, correlationID), nil
 	}
 
 	if req.Quantidade <= 0 {
-		return errorResponse(http.StatusBadRequest, "Quantidade deve ser maior que zero", origin), nil
+		return errorResponse(http.StatusBadRequest, "Quantidade deve ser maior que zero", origin, correlationID), nil
 	}
 	if req.PrecoUnitario <= 0 {
-		return errorResponse(http.StatusBadRequest, "PrecoUnitario deve ser maior que zero", origin), nil
+		return errorResponse(http.StatusBadRequest, "PrecoUnitario deve ser maior que zero", origin, correlationID), nil
 	}
 
 	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil {
 		slog.Error("Error fetching nota", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin, correlationID), nil
 	}
 	if nota == nil {
-		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin, correlationID), nil
 	}
 	if nota.Status != dominio.StatusNotaAberta {
-		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin), nil
+		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin, correlationID), nil
 	}
 
 	saldo, produtoExiste, err := h.repo.BuscarSaldoProduto(ctx, produtoID)
 	if err != nil {
 		slog.Error("Error checking product stock", "produtoId", produtoID, "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao verificar estoque do produto", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao verificar estoque do produto", origin, correlationID), nil
 	}
 	if !produtoExiste {
-		return errorResponse(http.StatusNotFound, "Produto não encontrado no estoque", origin), nil
+		return errorResponse(http.StatusNotFound, "Produto não encontrado no estoque", origin, correlationID), nil
 	}
 
 	var jaReservadoNaNota int
@@ -315,7 +324,7 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 
 	disponivel := saldo - jaReservadoNaNota
 	if disponivel < req.Quantidade {
-		return errorResponse(http.StatusConflict, fmt.Sprintf("Saldo insuficiente. Estoque: %d, Já na nota: %d, Disponível: %d, Solicitado: %d", saldo, jaReservadoNaNota, disponivel, req.Quantidade), origin), nil
+		return errorResponse(http.StatusConflict, fmt.Sprintf("Saldo insuficiente. Estoque: %d, Já na nota: %d, Disponível: %d, Solicitado: %d", saldo, jaReservadoNaNota, disponivel, req.Quantidade), origin, correlationID), nil
 	}
 
 	item := &dominio.ItemNota{
@@ -328,76 +337,76 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 
 	if err := h.repo.AdicionarItem(ctx, item); err != nil {
 		slog.Error("Error adding item", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Falha ao adicionar item", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Falha ao adicionar item", origin, correlationID), nil
 	}
 
 	body, _ := json.Marshal(item)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusCreated,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}, nil
 }
 
-func (h *LambdaHandler) handleFecharNota(ctx context.Context, notaIDStr string, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleFecharNota(ctx context.Context, notaIDStr string, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	notaID, err := uuid.Parse(notaIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin, correlationID), nil
 	}
 
 	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil {
 		slog.Error("Error fetching nota", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin, correlationID), nil
 	}
 	if nota == nil {
-		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin, correlationID), nil
 	}
 	if nota.Status != dominio.StatusNotaAberta {
-		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin), nil
+		return errorResponse(http.StatusBadRequest, "Nota não está aberta", origin, correlationID), nil
 	}
 	if len(nota.Itens) == 0 {
-		return errorResponse(http.StatusBadRequest, "Nota sem itens não pode ser fechada", origin), nil
+		return errorResponse(http.StatusBadRequest, "Nota sem itens não pode ser fechada", origin, correlationID), nil
 	}
 
-	if err := h.repo.FecharNota(ctx, notaID); err != nil {
+	if err := h.repo.FecharNota(ctx, notaID, correlationID); err != nil {
 		slog.Error("Error closing nota", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Falha ao fechar nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Falha ao fechar nota", origin, correlationID), nil
 	}
 
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       `{"message":"Nota fechada com sucesso"}`,
 	}, nil
 }
 
 // handleImprimirNota inicia o processo assíncrono de geração de PDF
-func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string, request events.APIGatewayProxyRequest, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	notaID, err := uuid.Parse(notaIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin, correlationID), nil
 	}
 
 	chaveIdem := getHeaderValue(request.Headers, "Idempotency-Key")
 	if chaveIdem == "" {
-		return errorResponse(http.StatusBadRequest, "Header Idempotency-Key obrigatório", origin), nil
+		return errorResponse(http.StatusBadRequest, "Header Idempotency-Key obrigatório", origin, correlationID), nil
 	}
 	if len(chaveIdem) < 8 || len(chaveIdem) > 256 {
-		return errorResponse(http.StatusBadRequest, "Idempotency-Key deve ter entre 8-256 caracteres", origin), nil
+		return errorResponse(http.StatusBadRequest, "Idempotency-Key deve ter entre 8-256 caracteres", origin, correlationID), nil
 	}
 
 	// Idempotência: retornar solicitação existente se já criada
 	existingSol, err := h.repo.BuscarSolicitacaoPorChave(ctx, chaveIdem)
 	if err != nil {
 		slog.Error("Error checking existing print request", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao verificar solicitação existente", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao verificar solicitação existente", origin, correlationID), nil
 	}
 	if existingSol != nil {
 		body, _ := json.Marshal(existingSol)
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusOK,
-			Headers:    corsHeaders(origin),
+			Headers:    corsHeaders(origin, correlationID),
 			Body:       string(body),
 		}, nil
 	}
@@ -405,16 +414,16 @@ func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string
 	nota, err := h.repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil {
 		slog.Error("Error fetching nota", "id", notaID, "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar nota", origin, correlationID), nil
 	}
 	if nota == nil {
-		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Nota não encontrada", origin, correlationID), nil
 	}
 	if nota.Status != dominio.StatusNotaAberta {
-		return errorResponse(http.StatusConflict, "Nota não está aberta", origin), nil
+		return errorResponse(http.StatusConflict, "Nota não está aberta", origin, correlationID), nil
 	}
 	if len(nota.Itens) == 0 {
-		return errorResponse(http.StatusConflict, "Nota sem itens não pode ser impressa", origin), nil
+		return errorResponse(http.StatusConflict, "Nota sem itens não pode ser impressa", origin, correlationID), nil
 	}
 
 	// Criar SolicitacaoImpressao com status PENDENTE
@@ -428,20 +437,22 @@ func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string
 
 	if err := h.repo.CriarSolicitacaoImpressao(ctx, sol); err != nil {
 		slog.Error("Error creating print request", "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao criar solicitação de impressão", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao criar solicitação de impressão", origin, correlationID), nil
 	}
 
 	// Publicar evento no outbox → PDF Lambda gerará o PDF de forma assíncrona
 	type payloadEvento struct {
 		NotaID        string `json:"notaId"`
 		SolicitacaoID string `json:"solicitacaoId"`
+		CorrelationID string `json:"correlationId,omitempty"`
 	}
 	payload := payloadEvento{
 		NotaID:        notaID.String(),
 		SolicitacaoID: solID.String(),
+		CorrelationID: correlationID,
 	}
 
-	if err := h.repo.PublicarEvento(ctx, "Faturamento.ImpressaoSolicitada", notaID, payload); err != nil {
+	if err := h.repo.PublicarEvento(ctx, "Faturamento.ImpressaoSolicitada", notaID, payload, correlationID); err != nil {
 		slog.Error("Error publishing print event", "error", err)
 		// Não falha a request — a solicitação foi criada; o usuário pode checar o status
 	}
@@ -451,12 +462,12 @@ func (h *LambdaHandler) handleImprimirNota(ctx context.Context, notaIDStr string
 	body, _ := json.Marshal(sol)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusAccepted, // 202 — processamento assíncrono
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}, nil
 }
 
-func (h *LambdaHandler) handleSolicitacoesImpressaoRoutes(ctx context.Context, request events.APIGatewayProxyRequest, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleSolicitacoesImpressaoRoutes(ctx context.Context, request events.APIGatewayProxyRequest, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	pathParts := strings.Split(strings.Trim(request.Path, "/"), "/")
 	var solID string
 	if len(pathParts) > 3 {
@@ -464,50 +475,55 @@ func (h *LambdaHandler) handleSolicitacoesImpressaoRoutes(ctx context.Context, r
 	}
 
 	if request.HTTPMethod == "GET" && solID != "" {
-		return h.handleGetSolicitacao(ctx, solID, origin)
+		return h.handleGetSolicitacao(ctx, solID, origin, correlationID)
 	}
-	return errorResponse(http.StatusNotFound, "Rota não encontrada", origin), nil
+	return errorResponse(http.StatusNotFound, "Rota não encontrada", origin, correlationID), nil
 }
 
-func (h *LambdaHandler) handleGetSolicitacao(ctx context.Context, solIDStr string, origin string) (events.APIGatewayProxyResponse, error) {
+func (h *LambdaHandler) handleGetSolicitacao(ctx context.Context, solIDStr string, origin string, correlationID string) (events.APIGatewayProxyResponse, error) {
 	solID, err := uuid.Parse(solIDStr)
 	if err != nil {
-		return errorResponse(http.StatusBadRequest, "ID inválido", origin), nil
+		return errorResponse(http.StatusBadRequest, "ID inválido", origin, correlationID), nil
 	}
 
 	sol, err := h.repo.BuscarSolicitacaoPorID(ctx, solID)
 	if err != nil {
 		slog.Error("Error fetching solicitacao", "id", solID, "error", err)
-		return errorResponse(http.StatusInternalServerError, "Erro ao buscar solicitação", origin), nil
+		return errorResponse(http.StatusInternalServerError, "Erro ao buscar solicitação", origin, correlationID), nil
 	}
 	if sol == nil {
-		return errorResponse(http.StatusNotFound, "Solicitação não encontrada", origin), nil
+		return errorResponse(http.StatusNotFound, "Solicitação não encontrada", origin, correlationID), nil
 	}
 
 	body, _ := json.Marshal(sol)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}, nil
 }
 
 // Helper functions
 
-func corsHeaders(origin string) map[string]string {
+func corsHeaders(origin string, correlationID string) map[string]string {
 	allowedOrigins := []string{
 		"http://localhost:4200",
 		"http://localhost:8080",
 	}
 
-	cloudFrontDomain := os.Getenv("CLOUDFRONT_DOMAIN")
-	if cloudFrontDomain != "" {
-		allowedOrigins = append(allowedOrigins, "https://"+cloudFrontDomain)
+	if configuredOrigins := os.Getenv("CORS_ORIGINS"); configuredOrigins != "" {
+		allowedOrigins = allowedOrigins[:0]
+		for _, item := range strings.Split(configuredOrigins, ",") {
+			trimmed := strings.TrimSpace(item)
+			if trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
 	}
 
 	allowOrigin := ""
 	for _, allowed := range allowedOrigins {
-		if origin == allowed || strings.HasSuffix(origin, ".cloudfront.net") {
+		if origin == allowed {
 			allowOrigin = origin
 			break
 		}
@@ -517,18 +533,20 @@ func corsHeaders(origin string) map[string]string {
 	}
 
 	return map[string]string{
-		"Content-Type":                 "application/json",
-		"Access-Control-Allow-Origin":  allowOrigin,
-		"Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-		"Access-Control-Allow-Headers": "Content-Type, Authorization, X-Idempotency-Key",
+		"Content-Type":                  "application/json",
+		"Access-Control-Allow-Origin":   allowOrigin,
+		"Access-Control-Allow-Methods":  "GET, POST, PUT, DELETE, OPTIONS",
+		"Access-Control-Allow-Headers":  "Content-Type, Authorization, Idempotency-Key, X-Correlation-Id",
+		"Access-Control-Expose-Headers": "X-Correlation-Id",
+		"X-Correlation-Id":              correlationID,
 	}
 }
 
-func errorResponse(statusCode int, message string, origin string) events.APIGatewayProxyResponse {
+func errorResponse(statusCode int, message string, origin string, correlationID string) events.APIGatewayProxyResponse {
 	body, _ := json.Marshal(map[string]string{"erro": message})
 	return events.APIGatewayProxyResponse{
 		StatusCode: statusCode,
-		Headers:    corsHeaders(origin),
+		Headers:    corsHeaders(origin, correlationID),
 		Body:       string(body),
 	}
 }
@@ -574,3 +592,4 @@ func main() {
 		return handler.HandleRequest(ctx, apiEvent)
 	})
 }
+

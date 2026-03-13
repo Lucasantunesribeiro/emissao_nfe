@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"servico-faturamento/internal/logger"
+	"servico-faturamento/internal/observability"
 	"servico-faturamento/internal/pdf"
 	"servico-faturamento/internal/repositorio"
 )
@@ -34,6 +35,7 @@ type PDFGenerator struct {
 type EventPayload struct {
 	NotaID        string `json:"notaId"`
 	SolicitacaoID string `json:"solicitacaoId"`
+	CorrelationID string `json:"correlationId,omitempty"`
 }
 
 func NewPDFGenerator() (*PDFGenerator, error) {
@@ -76,6 +78,10 @@ func (g *PDFGenerator) HandleRequest(ctx context.Context, event events.CloudWatc
 	if err := json.Unmarshal(event.Detail, &payload); err != nil {
 		return fmt.Errorf("failed to parse event detail: %w", err)
 	}
+	correlationID := payload.CorrelationID
+	if correlationID == "" {
+		correlationID = observability.CorrelationIDFromJSONDetail(event.Detail)
+	}
 
 	notaID, err := uuid.Parse(payload.NotaID)
 	if err != nil {
@@ -87,7 +93,7 @@ func (g *PDFGenerator) HandleRequest(ctx context.Context, event events.CloudWatc
 		return fmt.Errorf("invalid solicitacaoId in event: %w", err)
 	}
 
-	slog.Info("Generating PDF", "notaId", notaID, "solicitacaoId", solID)
+	slog.Info("Generating PDF", "notaId", notaID, "solicitacaoId", solID, "correlationId", correlationID)
 
 	// Buscar nota com itens
 	nota, err := g.repo.BuscarNotaPorID(ctx, notaID)
@@ -137,7 +143,7 @@ func (g *PDFGenerator) HandleRequest(ctx context.Context, event events.CloudWatc
 		return fmt.Errorf("failed to update solicitacao as CONCLUIDA: %w", err)
 	}
 
-	slog.Info("PDF generated and stored successfully", "notaId", notaID, "pdfUrl", pdfURL)
+	slog.Info("PDF generated and stored successfully", "notaId", notaID, "pdfUrl", pdfURL, "correlationId", correlationID)
 	return nil
 }
 

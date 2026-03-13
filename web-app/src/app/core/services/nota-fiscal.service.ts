@@ -3,15 +3,22 @@ import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { NotaFiscal, CriarNotaRequest, AdicionarItemRequest, ItemNota } from '../models/nota-fiscal.model';
 import { SolicitacaoImpressao, ImprimirNotaResponse } from '../models/solicitacao-impressao.model';
-import { environment } from '../../../environments/environment';
+import { RuntimeConfigService } from '../config/runtime-config.service';
 
 @Injectable({
   providedIn: 'root'
 })
 export class NotaFiscalService {
   private readonly http = inject(HttpClient);
-  private readonly baseUrl = `${environment.apiFaturamentoUrl}/notas`;
-  private readonly solicitacoesUrl = `${environment.apiFaturamentoUrl}/solicitacoes-impressao`;
+  private readonly runtimeConfig = inject(RuntimeConfigService);
+
+  private get baseUrl(): string {
+    return `${this.runtimeConfig.value.api.faturamentoUrl}/notas`;
+  }
+
+  private get solicitacoesUrl(): string {
+    return `${this.runtimeConfig.value.api.faturamentoUrl}/solicitacoes-impressao`;
+  }
 
   listarNotas(status?: string): Observable<NotaFiscal[]> {
     const params: Record<string, string> = {};

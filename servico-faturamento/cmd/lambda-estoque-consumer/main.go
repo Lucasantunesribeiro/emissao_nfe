@@ -32,7 +32,8 @@ type EstoqueConsumer struct {
 
 // NotaFechadaDetail é o payload do evento Faturamento.NotaFechada
 type NotaFechadaDetail struct {
-	NotaID string `json:"notaId"`
+	NotaID        string `json:"notaId"`
+	CorrelationID string `json:"correlationId,omitempty"`
 }
 
 func NewEstoqueConsumer() (*EstoqueConsumer, error) {
@@ -108,7 +109,7 @@ func (c *EstoqueConsumer) processRecord(ctx context.Context, record events.SQSMe
 		return fmt.Errorf("invalid notaId: %w", err)
 	}
 
-	slog.Info("Processing nota fechada", "notaId", notaID, "messageId", record.MessageId)
+	slog.Info("Processing nota fechada", "notaId", notaID, "messageId", record.MessageId, "correlationId", detail.CorrelationID)
 
 	// Idempotência: verificar se já processamos este evento
 	if already, _ := c.repo.MensagemJaProcessada(ctx, record.MessageId); already {
@@ -126,7 +127,7 @@ func (c *EstoqueConsumer) processRecord(ctx context.Context, record events.SQSMe
 	}
 	if len(nota.Itens) == 0 {
 		slog.Warn("Nota has no items, confirming empty reservation", "notaId", notaID)
-		return c.publishEvento(ctx, "ReservaConfirmada", notaID.String(), "reserva sem itens")
+		return c.publishEvento(ctx, "ReservaConfirmada", notaID.String(), "reserva sem itens", detail.CorrelationID)
 	}
 
 	// Tentar reservar estoque para cada item
@@ -160,22 +161,23 @@ func (c *EstoqueConsumer) processRecord(ctx context.Context, record events.SQSMe
 		}
 		// Marcar como processado ANTES de publicar (idempotência)
 		_ = c.repo.MarcarMensagemProcessada(ctx, record.MessageId)
-		return c.publishEvento(ctx, "ReservaFalhou", notaID.String(), motivoFalha)
+		return c.publishEvento(ctx, "ReservaFalhou", notaID.String(), motivoFalha, detail.CorrelationID)
 	}
 
 	// Reserva bem-sucedida
 	_ = c.repo.MarcarMensagemProcessada(ctx, record.MessageId)
 	slog.Info("Estoque reservado com sucesso", "notaId", notaID, "itens", len(nota.Itens))
-	return c.publishEvento(ctx, "ReservaConfirmada", notaID.String(), "")
+	return c.publishEvento(ctx, "ReservaConfirmada", notaID.String(), "", detail.CorrelationID)
 }
 
-func (c *EstoqueConsumer) publishEvento(ctx context.Context, tipoEvento, notaID, motivo string) error {
+func (c *EstoqueConsumer) publishEvento(ctx context.Context, tipoEvento, notaID, motivo, correlationID string) error {
 	type reservaDetail struct {
-		NotaID string `json:"notaId"`
-		Motivo string `json:"motivo,omitempty"`
+		NotaID        string `json:"notaId"`
+		Motivo        string `json:"motivo,omitempty"`
+		CorrelationID string `json:"correlationId,omitempty"`
 	}
 
-	detail := reservaDetail{NotaID: notaID, Motivo: motivo}
+	detail := reservaDetail{NotaID: notaID, Motivo: motivo, CorrelationID: correlationID}
 	detailJSON, _ := json.Marshal(detail)
 
 	_, err := c.ebClient.PutEvents(ctx, &eventbridge.PutEventsInput{
@@ -191,7 +193,7 @@ func (c *EstoqueConsumer) publishEvento(ctx context.Context, tipoEvento, notaID,
 	if err != nil {
 		return fmt.Errorf("failed to publish %s: %w", tipoEvento, err)
 	}
-	slog.Info("Event published", "eventType", tipoEvento, "notaId", notaID)
+	slog.Info("Event published", "eventType", tipoEvento, "notaId", notaID, "correlationId", correlationID)
 	return nil
 }
 

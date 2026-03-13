@@ -26,6 +26,32 @@ public sealed class Produto
     [Timestamp]
     public uint Versao { get; private set; }
 
+    public static Produto Rehydrate(
+        Guid id,
+        string sku,
+        string nome,
+        int saldo,
+        bool ativo,
+        DateTime dataCriacao,
+        uint versao)
+    {
+        if (id == Guid.Empty) throw new ArgumentException("Id inválido.", nameof(id));
+        if (string.IsNullOrWhiteSpace(sku)) throw new ArgumentException("SKU é obrigatório.", nameof(sku));
+        if (string.IsNullOrWhiteSpace(nome)) throw new ArgumentException("Nome é obrigatório.", nameof(nome));
+        if (saldo < 0) throw new ArgumentOutOfRangeException(nameof(saldo), "Saldo deve ser >= 0.");
+
+        return new Produto
+        {
+            Id = id,
+            Sku = sku,
+            Nome = nome,
+            Saldo = saldo,
+            Ativo = ativo,
+            DataCriacao = dataCriacao,
+            Versao = versao,
+        };
+    }
+
     public Resultado DebitarEstoque(int qtd)
     {
         if (qtd <= 0)

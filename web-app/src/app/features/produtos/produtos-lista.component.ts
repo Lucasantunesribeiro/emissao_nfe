@@ -1,6 +1,5 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RouterLink } from '@angular/router';
 import { finalize } from 'rxjs/operators';
 import { ProdutoService } from '../../core/services/produto.service';
 import { Produto } from '../../core/models/produto.model';
@@ -9,7 +8,7 @@ import { ProdutoFormComponent } from './produto-form.component';
 @Component({
   selector: 'app-produtos-lista',
   standalone: true,
-  imports: [CommonModule, RouterLink, ProdutoFormComponent],
+  imports: [CommonModule, ProdutoFormComponent],
   template: `
     <div class="space-y-6 max-w-6xl mx-auto">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

@@ -1,26 +1,99 @@
-name: Deploy – Development
+name: Deploy - Development
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'servico-faturamento/**'
-      - 'servico-estoque/**'
-      - 'web-app/**'
-      - 'infra/cdk/**'
-      - '.github/workflows/deploy-dev.yml'
+      - "servico-faturamento/**"
+      - "servico-estoque/**"
+      - "web-app/**"
+      - "infra/cdk/**"
+      - "infra/lambda-authorizer/**"
+      - ".github/workflows/deploy-dev.yml"
 
 env:
   AWS_REGION: us-east-1
+  COMPUTE_STACK_NAME: nfe-compute-serverless-dev
+  FRONTEND_STACK_NAME: nfe-frontend-serverless-dev
+  AUTH_STACK_NAME: nfe-auth-serverless-dev
 
 jobs:
-  # ─────────────────────────────────────────
-  # Go Lambdas – Faturamento, Outbox, PDF
-  # ─────────────────────────────────────────
-  deploy-faturamento:
-    name: Deploy Lambdas – Faturamento (Go)
+  deploy-infra:
+    name: Deploy CDK Infra
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(join(github.event.commits.*.modified, ','), 'infra/cdk/') ||
+      contains(join(github.event.commits.*.added, ','), 'infra/cdk/') ||
+      contains(join(github.event.commits.*.modified, ','), 'infra/lambda-authorizer/') ||
+      contains(join(github.event.commits.*.added, ','), 'infra/lambda-authorizer/') ||
+      contains(join(github.event.commits.*.modified, ','), '.github/workflows/deploy-dev.yml') ||
+      contains(join(github.event.commits.*.added, ','), '.github/workflows/deploy-dev.yml')
+    defaults:
+      run:
+        working-directory: ./infra/cdk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: infra/cdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile TypeScript
+        run: npm run build
+
+      - name: Create Lambda asset placeholders
+        run: |
+          mkdir -p ../../servico-faturamento/build
+          touch ../../servico-faturamento/build/bootstrap
+          mkdir -p ../../servico-faturamento/build-pdf
+          touch ../../servico-faturamento/build-pdf/bootstrap
+          mkdir -p ../../servico-faturamento/build-estoque-consumer
+          touch ../../servico-faturamento/build-estoque-consumer/bootstrap
+          mkdir -p ../../servico-estoque/publish-dynamodb
+          touch ../../servico-estoque/publish-dynamodb/placeholder
+          mkdir -p ../../servico-estoque/OutboxPublisher/publish
+          touch ../../servico-estoque/OutboxPublisher/publish/placeholder
+
+      - name: Build Lambda Authorizer
+        working-directory: ./infra/lambda-authorizer
+        run: npm ci && npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy serverless stack (dev)
+        run: npm run deploy:serverless:dev -- --require-approval never
+
+  infra-ready:
+    name: Infra Ready
+    runs-on: ubuntu-latest
+    needs: [deploy-infra]
+    if: always()
+    steps:
+      - name: Check infra result
+        run: |
+          if [ "${{ needs.deploy-infra.result }}" = "failure" ]; then
+            echo "Infrastructure deployment failed."
+            exit 1
+          fi
+          echo "Infrastructure is ready or unchanged."
+
+  deploy-faturamento:
+    name: Deploy Lambdas - Faturamento (Go)
+    runs-on: ubuntu-latest
+    needs: [infra-ready]
     defaults:
       run:
         working-directory: ./servico-faturamento
@@ -36,23 +109,26 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Build – Lambda principal
+      - name: Build - Lambda principal
         run: |
+          mkdir -p build
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
             go build -tags lambda.norpc -o build/bootstrap \
             ./cmd/lambda/main.go
 
-      - name: Build – Lambda Outbox
+      - name: Build - Lambda PDF
         run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-            go build -tags lambda.norpc -o build-outbox/bootstrap \
-            ./cmd/lambda-outbox/main.go
-
-      - name: Build – Lambda PDF
-        run: |
+          mkdir -p build-pdf
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
             go build -tags lambda.norpc -o build-pdf/bootstrap \
             ./cmd/lambda-pdf/main.go
+
+      - name: Build - Lambda Estoque Consumer
+        run: |
+          mkdir -p build-estoque-consumer
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags lambda.norpc -o build-estoque-consumer/bootstrap \
+            ./cmd/lambda-estoque-consumer/main.go
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -61,39 +137,34 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy – nfe-faturamento-dev
+      - name: Deploy - nfe-faturamento-dev
         run: |
           cd build && zip bootstrap.zip bootstrap
           aws lambda update-function-code \
             --function-name nfe-faturamento-dev \
             --zip-file fileb://bootstrap.zip
           aws lambda wait function-updated --function-name nfe-faturamento-dev
-          echo "nfe-faturamento-dev updated"
 
-      - name: Deploy – nfe-outbox-processor-dev
-        run: |
-          cd build-outbox && zip bootstrap.zip bootstrap
-          aws lambda update-function-code \
-            --function-name nfe-outbox-processor-dev \
-            --zip-file fileb://bootstrap.zip
-          aws lambda wait function-updated --function-name nfe-outbox-processor-dev
-          echo "nfe-outbox-processor-dev updated"
-
-      - name: Deploy – nfe-pdf-generator-dev
+      - name: Deploy - nfe-pdf-generator-dev
         run: |
           cd build-pdf && zip bootstrap.zip bootstrap
           aws lambda update-function-code \
             --function-name nfe-pdf-generator-dev \
             --zip-file fileb://bootstrap.zip
           aws lambda wait function-updated --function-name nfe-pdf-generator-dev
-          echo "nfe-pdf-generator-dev updated"
 
-  # ─────────────────────────────────────────
-  # .NET 8 Lambda – Estoque (managed runtime)
-  # ─────────────────────────────────────────
+      - name: Deploy - nfe-estoque-consumer-dev
+        run: |
+          cd build-estoque-consumer && zip bootstrap.zip bootstrap
+          aws lambda update-function-code \
+            --function-name nfe-estoque-consumer-dev \
+            --zip-file fileb://bootstrap.zip
+          aws lambda wait function-updated --function-name nfe-estoque-consumer-dev
+
   deploy-estoque:
-    name: Deploy Lambda – Estoque (.NET 8)
+    name: Deploy Lambdas - Estoque (.NET)
     runs-on: ubuntu-latest
+    needs: [infra-ready]
     defaults:
       run:
         working-directory: ./servico-estoque
@@ -103,9 +174,9 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: "8.0.x"
 
-      - name: Publish (.NET 8 managed runtime – linux-x64)
+      - name: Publish - Estoque API
         run: |
           dotnet publish ServicoEstoque.csproj \
             -c Release \
@@ -113,10 +184,23 @@ jobs:
             --self-contained false \
             -o lambda-publish
 
-      - name: Create ZIP
+      - name: Package - Estoque API
         run: |
           cd lambda-publish
           zip -r ../lambda-estoque.zip .
+
+      - name: Publish - Outbox Publisher
+        run: |
+          dotnet publish OutboxPublisher/OutboxPublisher.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o OutboxPublisher/publish
+
+      - name: Package - Outbox Publisher
+        run: |
+          cd OutboxPublisher/publish
+          zip -r ../../lambda-outbox-publisher.zip .
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -125,20 +209,24 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy – nfe-estoque-dev
+      - name: Deploy - nfe-estoque-dev
         run: |
           aws lambda update-function-code \
             --function-name nfe-estoque-dev \
             --zip-file fileb://lambda-estoque.zip
           aws lambda wait function-updated --function-name nfe-estoque-dev
-          echo "nfe-estoque-dev updated"
 
-  # ─────────────────────────────────────────
-  # Angular – S3 + CloudFront
-  # ─────────────────────────────────────────
+      - name: Deploy - nfe-outbox-publisher-dev
+        run: |
+          aws lambda update-function-code \
+            --function-name nfe-outbox-publisher-dev \
+            --zip-file fileb://lambda-outbox-publisher.zip
+          aws lambda wait function-updated --function-name nfe-outbox-publisher-dev
+
   deploy-frontend:
-    name: Deploy Frontend – S3 + CloudFront
+    name: Deploy Frontend - S3 + CloudFront
     runs-on: ubuntu-latest
+    needs: [infra-ready]
     defaults:
       run:
         working-directory: ./web-app
@@ -148,13 +236,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build production
-        run: npm run build:prod
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -163,45 +247,52 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve stack outputs
+        shell: bash
+        run: |
+          fetch_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$1" \
+              --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" \
+              --output text
+          }
+
+          echo "API_FATURAMENTO_URL=$(fetch_output "$COMPUTE_STACK_NAME" ApiFaturamentoUrl)" >> "$GITHUB_ENV"
+          echo "API_ESTOQUE_URL=$(fetch_output "$COMPUTE_STACK_NAME" ApiEstoqueUrl)" >> "$GITHUB_ENV"
+          echo "COGNITO_USER_POOL_ID=$(fetch_output "$AUTH_STACK_NAME" UserPoolId)" >> "$GITHUB_ENV"
+          echo "COGNITO_USER_POOL_CLIENT_ID=$(fetch_output "$AUTH_STACK_NAME" UserPoolClientId)" >> "$GITHUB_ENV"
+          echo "FRONTEND_BUCKET=$(fetch_output "$FRONTEND_STACK_NAME" BucketName)" >> "$GITHUB_ENV"
+          echo "CLOUDFRONT_DISTRIBUTION_ID=$(fetch_output "$FRONTEND_STACK_NAME" DistributionId)" >> "$GITHUB_ENV"
+          echo "AUTH_ENABLED=true" >> "$GITHUB_ENV"
+          echo "COGNITO_REGION=${AWS_REGION}" >> "$GITHUB_ENV"
+          echo "ENABLE_CORRELATION_ID=true" >> "$GITHUB_ENV"
+          echo "APP_ENVIRONMENT_NAME=Development" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production
+        run: npm run build:prod
+
       - name: Sync to S3
         run: |
           aws s3 sync dist/web-app/ \
-            s3://nfe-frontend-dev-246599827442/ \
+            "s3://${FRONTEND_BUCKET}/" \
             --delete
 
       - name: Invalidate CloudFront
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id E3GS1ORK9UYGOX \
+            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
             --paths "/*"
 
-  # ─────────────────────────────────────────
-  # CDK – Deploy infra (apenas quando infra/cdk muda)
-  # ─────────────────────────────────────────
-  deploy-infra:
-    name: Deploy CDK Infra
+  health-check:
+    name: Health Check
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      contains(join(github.event.commits.*.modified, ','), 'infra/cdk') ||
-      contains(join(github.event.commits.*.added, ','), 'infra/cdk')
-    defaults:
-      run:
-        working-directory: ./infra/cdk
+    needs: [deploy-faturamento, deploy-estoque, deploy-frontend]
+    if: always() && needs.deploy-faturamento.result == 'success' && needs.deploy-estoque.result == 'success' && needs.deploy-frontend.result == 'success'
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Compile TypeScript
-        run: npm run build
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -209,36 +300,37 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy serverless stack (dev)
-        run: npm run deploy:serverless:dev -- --require-approval never
-
-  # ─────────────────────────────────────────
-  # Health check – verifica os endpoints
-  # ─────────────────────────────────────────
-  health-check:
-    name: Health Check
-    runs-on: ubuntu-latest
-    needs: [deploy-faturamento, deploy-estoque, deploy-frontend]
-    if: always() && needs.deploy-faturamento.result == 'success' && needs.deploy-estoque.result == 'success'
-
-    steps:
-      - name: Health – Faturamento
+      - name: Resolve stack outputs
+        shell: bash
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            https://rtbyoojhhd.execute-api.us-east-1.amazonaws.com/dev/health)
+          fetch_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$1" \
+              --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" \
+              --output text
+          }
+
+          echo "API_FATURAMENTO_URL=$(fetch_output "$COMPUTE_STACK_NAME" ApiFaturamentoUrl)" >> "$GITHUB_ENV"
+          echo "API_ESTOQUE_URL=$(fetch_output "$COMPUTE_STACK_NAME" ApiEstoqueUrl)" >> "$GITHUB_ENV"
+          echo "FRONTEND_URL=$(fetch_output "$FRONTEND_STACK_NAME" CloudFrontUrl)" >> "$GITHUB_ENV"
+          echo "DASHBOARD_NAME=$(fetch_output "$COMPUTE_STACK_NAME" ObservabilityDashboardName)" >> "$GITHUB_ENV"
+
+      - name: Health - Faturamento
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_FATURAMENTO_URL}health")
           echo "Faturamento health: $STATUS"
           [ "$STATUS" = "200" ] || exit 1
 
-      - name: Health – Estoque
+      - name: Health - Estoque
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            https://t5baqexuo5.execute-api.us-east-1.amazonaws.com/dev/health)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ESTOQUE_URL}health")
           echo "Estoque health: $STATUS"
           [ "$STATUS" = "200" ] || exit 1
 
       - name: Summary
         run: |
-          echo "Deploy DEV concluído!"
-          echo "Frontend: https://d1gdw7rlsi8u42.cloudfront.net"
-          echo "API Faturamento: https://rtbyoojhhd.execute-api.us-east-1.amazonaws.com/dev/api/v1"
-          echo "API Estoque: https://t5baqexuo5.execute-api.us-east-1.amazonaws.com/dev/api/v1"
+          echo "Deploy DEV concluido"
+          echo "Frontend: ${FRONTEND_URL}"
+          echo "API Faturamento: ${API_FATURAMENTO_URL}api/v1"
+          echo "API Estoque: ${API_ESTOQUE_URL}api/v1"
+          echo "Dashboard: ${DASHBOARD_NAME}"
