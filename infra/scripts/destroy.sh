@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# LEGACY
+# Script da arquitetura antiga com ECS/RDS/RabbitMQ.
+# Mantido apenas para referencia historica e nao corresponde ao ambiente atual.
+
 # ================================================================
 # NFe Infrastructure Destroy Script
 # Author: DevOps Team

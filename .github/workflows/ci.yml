@@ -69,6 +69,11 @@ jobs:
             8.0.x
             9.0.x
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Restore
         run: dotnet restore
 

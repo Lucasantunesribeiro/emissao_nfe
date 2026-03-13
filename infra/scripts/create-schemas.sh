@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# LEGACY
+# Script da fase com PostgreSQL/RDS.
+# A trilha ativa do projeto usa DynamoDB e nao depende deste arquivo.
+
 # ================================================================
 # Script: Criar Schemas no RDS PostgreSQL
 # Database: nfe_db

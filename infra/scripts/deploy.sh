@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# LEGACY
+# Fluxo de deploy da fase pre-serverless com ECS/RDS/RabbitMQ.
+# Mantido apenas para referencia historica.
+# Nao use na arquitetura ativa.
+
 # ================================================================
 # NFe Infrastructure Deployment Script
 # Author: DevOps Team
