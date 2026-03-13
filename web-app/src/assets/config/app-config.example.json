@@ -1,0 +1,18 @@
+{
+  "api": {
+    "estoqueUrl": "http://localhost:4200/api/estoque",
+    "faturamentoUrl": "http://localhost:4200/api/faturamento"
+  },
+  "auth": {
+    "enabled": false,
+    "region": "us-east-1",
+    "userPoolId": "",
+    "userPoolClientId": ""
+  },
+  "observability": {
+    "enableCorrelationId": true
+  },
+  "ui": {
+    "environmentName": "Local"
+  }
+}

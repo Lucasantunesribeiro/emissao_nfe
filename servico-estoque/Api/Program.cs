@@ -6,7 +6,9 @@ using Amazon.Lambda.Serialization.SystemTextJson;
 using Microsoft.AspNetCore.Http.Json;
 using Amazon.DynamoDBv2;
 using Serilog;
+using Serilog.Context;
 using Serilog.Events;
+using Serilog.Formatting.Compact;
 using ServicoEstoque.Api;
 using ServicoEstoque.Api.DTOs;
 using ServicoEstoque.Aplicacao.CasosDeUso;
@@ -27,11 +29,10 @@ builder.Services.AddAWSLambdaHosting(
 var logLevel = builder.Environment.IsDevelopment() ? LogEventLevel.Debug : LogEventLevel.Information;
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Is(logLevel)
+    .Enrich.FromLogContext()
     .Enrich.WithProperty("service", "estoque")
     .Enrich.WithProperty("environment", builder.Environment.EnvironmentName)
-    .WriteTo.Console(
-        outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}",
-        formatProvider: null)
+    .WriteTo.Console(new RenderedCompactJsonFormatter())
     .CreateLogger();
 
 builder.Host.UseSerilog();
@@ -58,6 +59,7 @@ if (string.IsNullOrEmpty(mainTableName) || string.IsNullOrEmpty(eventsTableName)
 
 // Register AWS DynamoDB client
 builder.Services.AddSingleton<IAmazonDynamoDB>(sp => new AmazonDynamoDBClient());
+builder.Services.AddSingleton<ICorrelationContextAccessor, CorrelationContextAccessor>();
 
 // Register DynamoDB repositories
 builder.Services.AddScoped<IRepositorioProdutos>(sp =>
@@ -110,6 +112,33 @@ builder.Services.AddCors(opts =>
 });
 
 var app = builder.Build();
+
+app.Use(async (context, next) =>
+{
+    var accessor = context.RequestServices.GetRequiredService<ICorrelationContextAccessor>();
+    var correlationId = context.Request.Headers["X-Correlation-Id"].FirstOrDefault();
+
+    if (string.IsNullOrWhiteSpace(correlationId))
+    {
+        correlationId = Guid.NewGuid().ToString("N");
+    }
+
+    accessor.CorrelationId = correlationId;
+    context.Response.Headers["X-Correlation-Id"] = correlationId;
+
+    using (LogContext.PushProperty("correlationId", correlationId))
+    {
+        await next();
+    }
+});
+
+app.UseSerilogRequestLogging(options =>
+{
+    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
+    {
+        diagnosticContext.Set("correlationId", httpContext.Response.Headers["X-Correlation-Id"].ToString());
+    };
+});
 
 if (app.Environment.IsDevelopment())
 {

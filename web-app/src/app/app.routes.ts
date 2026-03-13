@@ -1,42 +1,37 @@
 import { Routes } from '@angular/router';
-// import { authGuard, publicGuard } from './core/guards/auth.guard'; // TODO: Habilitar quando autenticação estiver implementada
-import { ProdutosListaComponent } from './features/produtos/produtos-lista.component';
-import { NotasListaComponent } from './features/notas/notas-lista.component';
-import { NotaDetalhesComponent } from './features/notas/nota-detalhes.component';
+import { authGuard, publicGuard } from './core/guards/auth.guard';
 import { LoginComponent } from './features/auth/login.component';
 import { RegisterComponent } from './features/auth/register.component';
+import { NotaDetalhesComponent } from './features/notas/nota-detalhes.component';
+import { NotasListaComponent } from './features/notas/notas-lista.component';
+import { ProdutosListaComponent } from './features/produtos/produtos-lista.component';
 
 export const routes: Routes = [
-  // Rotas públicas
   {
     path: 'login',
-    component: LoginComponent
-    // canActivate: [publicGuard] // TODO: Habilitar quando autenticação estiver implementada
+    component: LoginComponent,
+    canActivate: [publicGuard],
   },
   {
     path: 'register',
-    component: RegisterComponent
-    // canActivate: [publicGuard] // TODO: Habilitar quando autenticação estiver implementada
+    component: RegisterComponent,
+    canActivate: [publicGuard],
   },
-
-  // Rotas principais (sem proteção temporariamente)
   {
     path: 'produtos',
-    component: ProdutosListaComponent
-    // canActivate: [authGuard] // TODO: Habilitar quando autenticação estiver implementada
+    component: ProdutosListaComponent,
+    canActivate: [authGuard],
   },
   {
     path: 'notas',
-    component: NotasListaComponent
-    // canActivate: [authGuard] // TODO: Habilitar quando autenticação estiver implementada
+    component: NotasListaComponent,
+    canActivate: [authGuard],
   },
   {
     path: 'notas/:id',
-    component: NotaDetalhesComponent
-    // canActivate: [authGuard] // TODO: Habilitar quando autenticação estiver implementada
+    component: NotaDetalhesComponent,
+    canActivate: [authGuard],
   },
-
-  // Redirecionamentos
-  { path: '', redirectTo: '/login', pathMatch: 'full' },
-  { path: '**', redirectTo: '/login' }
+  { path: '', redirectTo: '/produtos', pathMatch: 'full' },
+  { path: '**', redirectTo: '/produtos' },
 ];

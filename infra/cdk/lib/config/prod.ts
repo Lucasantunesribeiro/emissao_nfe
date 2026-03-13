@@ -83,7 +83,7 @@ export const prodConfig: InfraConfig = {
   },
 
   // CORS Configuration
-  cloudFrontDomain: 'https://nfe.meudominio.com', // Update with actual production domain
+  cloudFrontDomain: process.env.NFE_FRONTEND_ORIGIN ?? 'https://nfe.meudominio.com',
 
   // CloudWatch Alarms Configuration
   alarms: {

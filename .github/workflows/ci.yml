@@ -7,11 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  # ─────────────────────────────────────────
-  # Go – Faturamento (Lambda principal, outbox, PDF)
-  # ─────────────────────────────────────────
   ci-faturamento:
-    name: Build & Vet – Faturamento (Go)
+    name: Build and Test - Faturamento (Go)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -28,10 +25,9 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Vet (pacotes Lambda)
+      - name: Vet
         run: |
           go vet ./cmd/lambda/...
-          go vet ./cmd/lambda-outbox/...
           go vet ./cmd/lambda-pdf/...
           go vet ./cmd/lambda-estoque-consumer/...
           go vet ./internal/...
@@ -39,35 +35,26 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build – Lambda principal
+      - name: Build - Lambda principal
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
             go build -tags lambda.norpc -o /tmp/bootstrap-faturamento \
             ./cmd/lambda/main.go
 
-      - name: Build – Lambda Outbox
-        run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-            go build -tags lambda.norpc -o /tmp/bootstrap-outbox \
-            ./cmd/lambda-outbox/main.go
-
-      - name: Build – Lambda PDF
+      - name: Build - Lambda PDF
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
             go build -tags lambda.norpc -o /tmp/bootstrap-pdf \
             ./cmd/lambda-pdf/main.go
 
-      - name: Build – Lambda Estoque Consumer
+      - name: Build - Lambda Estoque Consumer
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
             go build -tags lambda.norpc -o /tmp/bootstrap-estoque-consumer \
             ./cmd/lambda-estoque-consumer/main.go
 
-  # ─────────────────────────────────────────
-  # .NET 8 – Estoque (managed runtime, DLLs)
-  # ─────────────────────────────────────────
   ci-estoque:
-    name: Build & Test – Estoque (.NET)
+    name: Build and Test - Estoque (.NET)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -89,13 +76,18 @@ jobs:
         run: dotnet build --no-restore -c Release
 
       - name: Test
-        run: dotnet test Tests/ServicoEstoque.Tests.csproj
+        run: dotnet test Tests/ServicoEstoque.Tests.csproj --no-build
 
-  # ─────────────────────────────────────────
-  # Angular 17 – Frontend
-  # ─────────────────────────────────────────
+      - name: Publish - Outbox Publisher
+        run: |
+          dotnet publish OutboxPublisher/OutboxPublisher.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o OutboxPublisher/publish
+
   ci-frontend:
-    name: Build – Frontend (Angular)
+    name: Build and Test - Frontend (Angular)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -106,22 +98,24 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Test (Jest)
+      - name: Test
         run: npm run test:ci
 
       - name: Build production
         run: npm run build:prod
 
-  # ─────────────────────────────────────────
-  # AWS CDK – Serverless stack synth
-  # ─────────────────────────────────────────
+      - name: Security audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
   ci-cdk:
-    name: Synth – CDK Serverless
+    name: Synth - CDK Serverless
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -132,30 +126,32 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: infra/cdk/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Compile TypeScript
         run: npm run build
 
-      - name: Criar placeholders de assets Lambda (necessário para cdk synth sem builds reais)
+      - name: Create Lambda asset placeholders
         run: |
           mkdir -p ../../servico-faturamento/build
           touch ../../servico-faturamento/build/bootstrap
-          mkdir -p ../../servico-faturamento/build-outbox
-          touch ../../servico-faturamento/build-outbox/bootstrap
           mkdir -p ../../servico-faturamento/build-pdf
           touch ../../servico-faturamento/build-pdf/bootstrap
           mkdir -p ../../servico-faturamento/build-estoque-consumer
           touch ../../servico-faturamento/build-estoque-consumer/bootstrap
           mkdir -p ../../servico-estoque/publish-dynamodb
           touch ../../servico-estoque/publish-dynamodb/placeholder
+          mkdir -p ../../servico-estoque/OutboxPublisher/publish
+          touch ../../servico-estoque/OutboxPublisher/publish/placeholder
 
-      - name: Build Lambda Authorizer (necessário para bundling local no CDK)
+      - name: Build Lambda Authorizer
         working-directory: ./infra/lambda-authorizer
-        run: npm install && npm run build
+        run: npm ci && npm run build
 
       - name: Synth (dev)
         run: npm run synth:serverless -- --context env=dev

@@ -1,22 +1,33 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { RuntimeConfigService } from '../config/runtime-config.service';
 import { NotaFiscalService } from './nota-fiscal.service';
-import { environment } from '../../../environments/environment';
+
+const runtimeConfigMock = {
+  value: {
+    api: {
+      faturamentoUrl: 'https://api-faturamento.test/api/v1',
+      estoqueUrl: 'https://api-estoque.test/api/v1',
+    },
+  },
+};
 
 describe('NotaFiscalService', () => {
   let service: NotaFiscalService;
   let http: HttpTestingController;
-  const baseUrl = `${environment.apiFaturamentoUrl}/notas`;
+  const baseUrl = `${runtimeConfigMock.value.api.faturamentoUrl}/notas`;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [
         NotaFiscalService,
+        { provide: RuntimeConfigService, useValue: runtimeConfigMock },
         provideHttpClient(),
         provideHttpClientTesting(),
       ],
     });
+
     service = TestBed.inject(NotaFiscalService);
     http = TestBed.inject(HttpTestingController);
   });
@@ -87,7 +98,7 @@ describe('NotaFiscalService', () => {
 
   it('consultarStatusImpressao deve fazer GET na URL de solicitações', () => {
     const solicitacaoId = 'sol-001';
-    const solUrl = `${environment.apiFaturamentoUrl}/solicitacoes-impressao/${solicitacaoId}`;
+    const solUrl = `${runtimeConfigMock.value.api.faturamentoUrl}/solicitacoes-impressao/${solicitacaoId}`;
 
     service.consultarStatusImpressao(solicitacaoId).subscribe();
 

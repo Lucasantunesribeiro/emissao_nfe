@@ -28,6 +28,16 @@ export interface ComputeStackServerlessProps extends cdk.StackProps {
   cloudFrontDomain?: string; // Domínio CloudFront (para URLs dos PDFs)
 }
 
+function normalizeOrigin(origin?: string): string {
+  if (!origin) {
+    return 'http://localhost:4200';
+  }
+
+  return origin.startsWith('http://') || origin.startsWith('https://')
+    ? origin
+    : `https://${origin}`;
+}
+
 /**
  * ComputeStackServerless: Arquitetura Lambda + DynamoDB 100% FREE TIER
  *
@@ -46,12 +56,14 @@ export class ComputeStackServerless extends cdk.Stack {
   public readonly apiEstoque: apigateway.RestApi;
   public readonly faturamentoFunction: lambda.Function;
   public readonly estoqueFunction: lambda.Function;
-  public readonly outboxProcessorFunction: lambda.Function;
+  public readonly outboxPublisherFunction: lambda.Function;
 
   constructor(scope: Construct, id: string, props: ComputeStackServerlessProps) {
     super(scope, id, props);
 
     const { config, vpc, mainTable, eventsTable, eventBus, userPoolId, userPoolClientId, frontendBucketName, cloudFrontDomain } = props;
+    const frontendOrigin = normalizeOrigin(cloudFrontDomain || config.cloudFrontDomain);
+    const corsAllowedOrigins = Array.from(new Set([frontendOrigin, 'http://localhost:4200']));
 
     // ===========================
     // 1. SQS Queues (Mensageria)
@@ -96,6 +108,7 @@ export class ComputeStackServerless extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AWSXRayDaemonWriteAccess'),
         // VPCAccessExecutionRole REMOVED: Lambdas no longer run in VPC
       ],
     });
@@ -103,6 +116,7 @@ export class ComputeStackServerless extends cdk.Stack {
     // Grant DynamoDB read/write permissions
     mainTable.grantReadWriteData(lambdaRole);
     eventsTable.grantReadWriteData(lambdaRole);
+    eventsTable.grantStreamRead(lambdaRole);
 
     // Grant SQS send/receive
     estoqueReservaQueue.grantSendMessages(lambdaRole);
@@ -246,10 +260,11 @@ export class ComputeStackServerless extends cdk.Stack {
         DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
         SQS_ESTOQUE_RESERVA_URL: estoqueReservaQueue.queueUrl,
-        CORS_ORIGINS: cloudFrontDomain ? `https://${cloudFrontDomain}` : 'http://localhost:4200',
+        CORS_ORIGINS: corsAllowedOrigins.join(','),
         PDF_BUCKET_NAME: frontendBucketName || `nfe-frontend-${config.environment}-${cdk.Aws.ACCOUNT_ID}`,
         CLOUDFRONT_DOMAIN: cloudFrontDomain || '',
       },
+      tracing: lambda.Tracing.ACTIVE,
       // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
       // RDS is publicly accessible with restricted Security Group
       reservedConcurrentExecutions: config.environment === 'prod' ? 10 : undefined,
@@ -283,9 +298,10 @@ export class ComputeStackServerless extends cdk.Stack {
         DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
         SQS_FATURAMENTO_CONFIRMACAO_URL: faturamentoConfirmacaoQueue.queueUrl,
-        CORS_ORIGINS: cloudFrontDomain ? `https://${cloudFrontDomain}` : 'http://localhost:4200',
+        CORS_ORIGINS: corsAllowedOrigins.join(','),
         DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1', // Otimização .NET
       },
+      tracing: lambda.Tracing.ACTIVE,
       // VPC REMOVED: Lambda now runs outside VPC (cost savings: $21.90/month)
       reservedConcurrentExecutions: config.environment === 'prod' ? 10 : undefined,
     });
@@ -325,6 +341,7 @@ export class ComputeStackServerless extends cdk.Stack {
         DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
       },
+      tracing: lambda.Tracing.ACTIVE,
     });
 
     // SQS Event Source: estoque-reserva → Lambda EstoqueConsumer (Go)
@@ -334,42 +351,40 @@ export class ComputeStackServerless extends cdk.Stack {
       reportBatchItemFailures: true,
     }));
 
-    // Lambda: Outbox Processor (scheduled job)
-    const outboxLogGroup = new logs.LogGroup(this, 'OutboxLogGroup', {
-      logGroupName: `/aws/lambda/nfe-outbox-processor-${config.environment}`,
+    // Lambda: Outbox Publisher (.NET) - consome DynamoDB Streams e publica no EventBridge
+    const outboxLogGroup = new logs.LogGroup(this, 'OutboxPublisherLogGroup', {
+      logGroupName: `/aws/lambda/nfe-outbox-publisher-${config.environment}`,
       retention: config.environment === 'prod'
         ? logs.RetentionDays.ONE_MONTH
         : logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    this.outboxProcessorFunction = new lambda.Function(this, 'OutboxProcessorFunction', {
-      functionName: `nfe-outbox-processor-${config.environment}`,
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset('../../servico-faturamento/build-outbox'),
+    this.outboxPublisherFunction = new lambda.Function(this, 'OutboxPublisherFunction', {
+      functionName: `nfe-outbox-publisher-${config.environment}`,
+      runtime: lambda.Runtime.DOTNET_8,
+      handler: 'ServicoEstoque.OutboxPublisher::ServicoEstoque.OutboxPublisher.Function::FunctionHandler',
+      code: lambda.Code.fromAsset('../../servico-estoque/OutboxPublisher/publish'),
       architecture: lambda.Architecture.X86_64,
-      memorySize: 256,
-      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(30),
       role: lambdaRole,
       logGroup: outboxLogGroup,
       environment: {
-        ENVIRONMENT: config.environment,
-        LOG_LEVEL: 'INFO',
         DYNAMODB_TABLE_NAME: mainTable.tableName,
         DYNAMODB_EVENTS_TABLE_NAME: eventsTable.tableName,
         EVENT_BUS_NAME: eventBus.eventBusName,
       },
-      // VPC REMOVED: Lambda now runs outside VPC
+      tracing: lambda.Tracing.ACTIVE,
     });
 
-    // EventBridge Rule: Trigger outbox processor a cada 1 minuto
-    const outboxRule = new events.Rule(this, 'OutboxProcessorRule', {
-      ruleName: `nfe-outbox-processor-${config.environment}`,
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-      enabled: true,
-    });
-    outboxRule.addTarget(new targets.LambdaFunction(this.outboxProcessorFunction));
+    this.outboxPublisherFunction.addEventSource(new lambdaEventSources.DynamoEventSource(eventsTable, {
+      startingPosition: lambda.StartingPosition.LATEST,
+      batchSize: 25,
+      maxBatchingWindow: cdk.Duration.seconds(5),
+      bisectBatchOnError: true,
+      retryAttempts: 3,
+    }));
 
     // Lambda: PDF Generator (event-driven)
     const pdfLogGroup = new logs.LogGroup(this, 'PdfGeneratorLogGroup', {
@@ -398,6 +413,7 @@ export class ComputeStackServerless extends cdk.Stack {
         PDF_BUCKET_NAME: frontendBucketName || `nfe-frontend-${config.environment}-${cdk.Aws.ACCOUNT_ID}`,
         CLOUDFRONT_DOMAIN: cloudFrontDomain || config.cloudFrontDomain || '',
       },
+      tracing: lambda.Tracing.ACTIVE,
       // VPC REMOVED: Lambda now runs outside VPC
     });
 
@@ -426,15 +442,14 @@ export class ComputeStackServerless extends cdk.Stack {
         throttlingBurstLimit: 200,
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
         dataTraceEnabled: config.environment === 'dev',
+        tracingEnabled: true,
         metricsEnabled: true,
       },
       defaultCorsPreflightOptions: {
         // SECURITY: CORS restrito ao domínio específico do frontend
-        allowOrigins: config.environment === 'prod'
-          ? ['https://nfe.meudominio.com']  // Produção: domínio customizado
-          : [config.cloudFrontDomain, 'http://localhost:4200'],  // Dev: CloudFront do config (atualizar em dev.ts ao trocar conta)
+        allowOrigins: corsAllowedOrigins,
         allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key'],
+        allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key', 'X-Correlation-Id'],
         maxAge: cdk.Duration.hours(1),
         allowCredentials: false,  // Não permite cookies (stateless API)
       },
@@ -486,15 +501,14 @@ export class ComputeStackServerless extends cdk.Stack {
 
     // Security + CORS Headers em respostas de erro (API Faturamento)
     // CORS é necessário para que o browser mostre o erro real ao invés de "CORS blocked"
-    const corsOriginHeader = cloudFrontDomain
-      ? `'https://${cloudFrontDomain}'`
-      : "'http://localhost:4200'";
+    const corsOriginHeader = `'${frontendOrigin}'`;
 
     this.apiFaturamento.addGatewayResponse('Default4XX', {
       type: apigateway.ResponseType.DEFAULT_4XX,
       responseHeaders: {
         'Access-Control-Allow-Origin': corsOriginHeader,
-        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'",
+        'Access-Control-Expose-Headers': "'X-Correlation-Id'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -506,7 +520,8 @@ export class ComputeStackServerless extends cdk.Stack {
       type: apigateway.ResponseType.DEFAULT_5XX,
       responseHeaders: {
         'Access-Control-Allow-Origin': corsOriginHeader,
-        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'",
+        'Access-Control-Expose-Headers': "'X-Correlation-Id'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -524,15 +539,14 @@ export class ComputeStackServerless extends cdk.Stack {
         throttlingBurstLimit: 200,
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
         dataTraceEnabled: config.environment === 'dev',
+        tracingEnabled: true,
         metricsEnabled: true,
       },
       defaultCorsPreflightOptions: {
         // SECURITY: CORS restrito ao domínio específico do frontend
-        allowOrigins: config.environment === 'prod'
-          ? ['https://nfe.meudominio.com']  // Produção: domínio customizado
-          : [config.cloudFrontDomain, 'http://localhost:4200'],  // Dev: CloudFront do config (atualizar em dev.ts ao trocar conta)
+        allowOrigins: corsAllowedOrigins,
         allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key'],
+        allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Request-Id', 'Idempotency-Key', 'X-Correlation-Id'],
         maxAge: cdk.Duration.hours(1),
         allowCredentials: false,  // Não permite cookies (stateless API)
       },
@@ -569,7 +583,8 @@ export class ComputeStackServerless extends cdk.Stack {
       type: apigateway.ResponseType.DEFAULT_4XX,
       responseHeaders: {
         'Access-Control-Allow-Origin': corsOriginHeader,
-        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'",
+        'Access-Control-Expose-Headers': "'X-Correlation-Id'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -581,7 +596,8 @@ export class ComputeStackServerless extends cdk.Stack {
       type: apigateway.ResponseType.DEFAULT_5XX,
       responseHeaders: {
         'Access-Control-Allow-Origin': corsOriginHeader,
-        'Access-Control-Allow-Headers': "'Content-Type,Authorization,X-Idempotency-Key'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,Idempotency-Key,X-Correlation-Id'",
+        'Access-Control-Expose-Headers': "'X-Correlation-Id'",
         'X-Content-Type-Options': "'nosniff'",
         'X-Frame-Options': "'DENY'",
         'Strict-Transport-Security': "'max-age=31536000; includeSubDomains; preload'",
@@ -671,6 +687,73 @@ export class ComputeStackServerless extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
+    new cloudwatch.Alarm(this, 'ApiFaturamentoLatencyAlarm', {
+      alarmName: `nfe-api-faturamento-latency-${config.environment}`,
+      alarmDescription: 'Latência p95 da API de faturamento acima do limite esperado',
+      metric: this.apiFaturamento.metricLatency({
+        period: cdk.Duration.minutes(5),
+        statistic: 'p95',
+      }),
+      threshold: config.alarms.latencyThreshold,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'ApiEstoqueLatencyAlarm', {
+      alarmName: `nfe-api-estoque-latency-${config.environment}`,
+      alarmDescription: 'Latência p95 da API de estoque acima do limite esperado',
+      metric: this.apiEstoque.metricLatency({
+        period: cdk.Duration.minutes(5),
+        statistic: 'p95',
+      }),
+      threshold: config.alarms.latencyThreshold,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    const observabilityDashboard = new cloudwatch.Dashboard(this, 'ObservabilityDashboard', {
+      dashboardName: `nfe-observability-${config.environment}`,
+      start: '-PT6H',
+    });
+
+    observabilityDashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'API Latency p95',
+        left: [
+          this.apiFaturamento.metricLatency({ statistic: 'p95', label: 'Faturamento p95' }),
+          this.apiEstoque.metricLatency({ statistic: 'p95', label: 'Estoque p95' }),
+        ],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Errors',
+        left: [
+          this.faturamentoFunction.metricErrors({ label: 'Faturamento' }),
+          this.estoqueFunction.metricErrors({ label: 'Estoque' }),
+          this.outboxPublisherFunction.metricErrors({ label: 'Outbox Publisher' }),
+          pdfGeneratorFunction.metricErrors({ label: 'PDF' }),
+          estoqueConsumerFunction.metricErrors({ label: 'Estoque Consumer' }),
+        ],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Duration p95',
+        left: [
+          this.faturamentoFunction.metricDuration({ statistic: 'p95', label: 'Faturamento p95' }),
+          this.estoqueFunction.metricDuration({ statistic: 'p95', label: 'Estoque p95' }),
+          this.outboxPublisherFunction.metricDuration({ statistic: 'p95', label: 'Outbox Publisher p95' }),
+        ],
+      }),
+      new cloudwatch.SingleValueWidget({
+        title: 'Queue Depth',
+        metrics: [
+          estoqueReservaQueue.metricApproximateNumberOfMessagesVisible({ label: 'Estoque Reserva' }),
+          faturamentoConfirmacaoQueue.metricApproximateNumberOfMessagesVisible({ label: 'Faturamento Confirmação' }),
+          dlq.metricApproximateNumberOfMessagesVisible({ label: 'DLQ' }),
+        ],
+      }),
+    );
+
     // ===========================
     // 7. Outputs
     // ===========================
@@ -710,6 +793,17 @@ export class ComputeStackServerless extends cdk.Stack {
     new cdk.CfnOutput(this, 'EstoqueConsumerFunctionArn', {
       value: estoqueConsumerFunction.functionArn,
       description: 'Lambda Estoque Consumer (Go) ARN',
+    });
+
+    new cdk.CfnOutput(this, 'OutboxPublisherFunctionArn', {
+      value: this.outboxPublisherFunction.functionArn,
+      description: 'Lambda Outbox Publisher (.NET) ARN',
+    });
+
+    new cdk.CfnOutput(this, 'ObservabilityDashboardName', {
+      value: observabilityDashboard.dashboardName,
+      description: 'CloudWatch dashboard name for APIs, Lambdas and queues',
+      exportName: `NfeObservabilityDashboard-${config.environment}`,
     });
 
     // ===========================

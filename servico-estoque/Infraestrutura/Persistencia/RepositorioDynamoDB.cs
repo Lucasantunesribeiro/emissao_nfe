@@ -196,18 +196,14 @@ public class RepositorioDynamoDBProdutos : IRepositorioProdutos
 
     private Produto MapToProduto(Dictionary<string, AttributeValue> item)
     {
-        // Use reflection to create Produto bypassing constructor validation
-        var produto = (Produto)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(Produto));
-
-        typeof(Produto).GetProperty("Id")!.SetValue(produto, Guid.Parse(item["id"].S));
-        typeof(Produto).GetProperty("Sku")!.SetValue(produto, item["sku"].S);
-        typeof(Produto).GetProperty("Nome")!.SetValue(produto, item["nome"].S);
-        typeof(Produto).GetProperty("Saldo")!.SetValue(produto, int.Parse(item["saldo"].N));
-        typeof(Produto).GetProperty("Ativo")!.SetValue(produto, item["ativo"].BOOL);
-        typeof(Produto).GetProperty("DataCriacao")!.SetValue(produto, DateTime.Parse(item["data_criacao"].S));
-        typeof(Produto).GetProperty("Versao")!.SetValue(produto, uint.Parse(item["versao"].N));
-
-        return produto;
+        return Produto.Rehydrate(
+            Guid.Parse(item["id"].S),
+            item["sku"].S,
+            item["nome"].S,
+            int.Parse(item["saldo"].N),
+            item["ativo"].BOOL,
+            DateTime.Parse(item["data_criacao"].S),
+            uint.Parse(item["versao"].N));
     }
 }
 
@@ -356,6 +352,11 @@ public class RepositorioDynamoDBEventos : IRepositorioEventos
         if (evento.DataPublicacao.HasValue)
         {
             item["data_publicacao"] = new AttributeValue(evento.DataPublicacao.Value.ToString("o"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(evento.CorrelationId))
+        {
+            item["correlation_id"] = new AttributeValue(evento.CorrelationId);
         }
 
         var request = new PutItemRequest

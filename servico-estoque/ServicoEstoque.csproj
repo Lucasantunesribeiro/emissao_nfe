@@ -8,7 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="Amazon.Lambda.AspNetCoreServer.Hosting" Version="1.9.0" />
-    <PackageReference Include="AWSSDK.DynamoDBv2" Version="3.7.400.46" />
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="3.7.401" />
     <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="3.7.301" />
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
     <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <Compile Remove="Tests/**" />
+    <Compile Remove="OutboxPublisher/**" />
   </ItemGroup>
 
 </Project>

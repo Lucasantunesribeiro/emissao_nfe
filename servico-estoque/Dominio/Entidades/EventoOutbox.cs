@@ -9,4 +9,5 @@ public class EventoOutbox
     public DateTime DataOcorrencia { get; set; }
     public DateTime? DataPublicacao { get; set; }
     public int TentativasEnvio { get; set; }
+    public string? CorrelationId { get; set; }
 }
