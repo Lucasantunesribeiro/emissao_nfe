@@ -36,6 +36,13 @@ public sealed class ReservarEstoqueHandler
     {
         try
         {
+            // Idempotencia por (nota, produto): um retry da mesma requisicao devolve a
+            // reserva ja gravada em vez de debitar o estoque de novo.
+            var reservaId = ReservaEstoque.GerarId(cmd.NotaId, cmd.ProdutoId);
+            var existente = await _repoReservas.BuscarPorIdAsync(reservaId, ct);
+            if (existente is not null)
+                return RespostaParaReservaExistente(existente, cmd);
+
             var produto = await _repoProdutos.BuscarPorIdAsync(cmd.ProdutoId, ct);
             if (produto is null)
                 return Resultado<ReservaEstoque>.Falha("Produto nao encontrado");
@@ -70,23 +77,24 @@ public sealed class ReservarEstoqueHandler
                 return Resultado<ReservaEstoque>.Falha(resultDebito.Mensagem!);
             }
 
-            _logger.LogInformation("[ReservarEstoque] Debito aplicado com sucesso, saldo atual do produto: {Saldo}", produto.Saldo);
-
-            // Update produto with new saldo
-            await _repoProdutos.AtualizarProdutoAsync(produto, ct);
+            if (simularFalha)
+            {
+                // Falha de demonstracao ANTES de qualquer escrita. Antes ela ocorria
+                // depois de debitar e gravar Estoque.Reservado, deixando o estoque
+                // debitado e dois eventos contraditorios (Reservado + ReservaRejeitada).
+                _logger.LogWarning("[ReservarEstoque] X-Demo-Fail detectado - lancando excecao");
+                throw new InvalidOperationException("Falha simulada");
+            }
 
             var reserva = new ReservaEstoque
             {
-                Id = Guid.NewGuid(),
+                Id = reservaId,
                 NotaId = cmd.NotaId,
                 ProdutoId = cmd.ProdutoId,
                 Quantidade = cmd.Quantidade,
                 Status = "RESERVADO",
                 DataCriacao = DateTime.UtcNow
             };
-
-            await _repoReservas.SalvarReservaAsync(reserva, ct);
-            _logger.LogInformation("[ReservarEstoque] Reserva registrada: {ReservaId}", reserva.Id);
 
             var itensPayload = new List<EventoReservaItemPayload>
             {
@@ -109,16 +117,19 @@ public sealed class ReservarEstoqueHandler
                 DataOcorrencia = DateTime.UtcNow
             };
 
-            await _repoEventos.SalvarEventoOutboxAsync(evento, ct);
-            _logger.LogInformation("[ReservarEstoque] Evento de sucesso preparado para Nota={NotaId}", cmd.NotaId);
-
-            if (simularFalha)
+            // Reserva + baixa do saldo + evento de outbox numa unica transacao:
+            // ou tudo e gravado, ou nada (sem baixa orfa nem evento sem baixa).
+            var criada = await _repoReservas.ReservarComBaixaAtomicaAsync(reserva, produto, evento, ct);
+            if (!criada)
             {
-                _logger.LogWarning("[ReservarEstoque] X-Demo-Fail detectado - lancando excecao");
-                throw new InvalidOperationException("Falha simulada");
+                // Corrida com outra requisicao identica: ela gravou primeiro.
+                var concorrente = await _repoReservas.BuscarPorIdAsync(reservaId, ct);
+                return concorrente is null
+                    ? Resultado<ReservaEstoque>.Falha("Reserva concorrente detectada. Tente novamente.")
+                    : RespostaParaReservaExistente(concorrente, cmd);
             }
 
-            _logger.LogInformation("[ReservarEstoque] Reserva criada com sucesso: {ReservaId}", reserva.Id);
+            _logger.LogInformation("[ReservarEstoque] Reserva criada com sucesso: {ReservaId}, saldo atual: {Saldo}", reserva.Id, produto.Saldo);
             return Resultado<ReservaEstoque>.Sucesso(reserva);
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("Versão desatualizada"))
@@ -219,6 +230,21 @@ public sealed class ReservarEstoqueHandler
             await PublicarRejeicaoAsync(cmd.NotaId, ex.Message, ct);
             return Resultado.Falha($"Erro ao processar reserva: {ex.Message}");
         }
+    }
+
+    private Resultado<ReservaEstoque> RespostaParaReservaExistente(ReservaEstoque existente, ReservarEstoqueCommand cmd)
+    {
+        if (existente.Quantidade != cmd.Quantidade)
+        {
+            _logger.LogWarning(
+                "[ReservarEstoque] Reserva {ReservaId} ja existe com quantidade {Existente}; pedido com {Pedida} ignorado",
+                existente.Id, existente.Quantidade, cmd.Quantidade);
+            return Resultado<ReservaEstoque>.Falha(
+                $"Ja existe reserva desta nota para o produto com quantidade {existente.Quantidade}. Nenhuma nova baixa foi aplicada.");
+        }
+
+        _logger.LogInformation("[ReservarEstoque] Reserva {ReservaId} ja registrada; retry idempotente sem nova baixa", existente.Id);
+        return Resultado<ReservaEstoque>.Sucesso(existente);
     }
 
     private async Task PublicarRejeicaoAsync(Guid notaId, string motivo, CancellationToken ct)

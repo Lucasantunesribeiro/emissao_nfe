@@ -22,6 +22,18 @@ public interface IRepositorioReservas
     Task<ReservaEstoque?> BuscarPorIdAsync(Guid id, CancellationToken ct = default);
     Task<List<ReservaEstoque>> ListarPorNotaAsync(Guid notaId, CancellationToken ct = default);
     Task SalvarReservaAsync(ReservaEstoque reserva, CancellationToken ct = default);
+
+    /// <summary>
+    /// Grava, numa unica transacao DynamoDB, a reserva (condicionada a nao existir),
+    /// a baixa do produto (condicionada a versao lida) e o evento de outbox.
+    /// Retorna false, sem alterar nada, se a reserva com o mesmo Id ja existir.
+    /// Lanca InvalidOperationException("Versão desatualizada ...") em conflito de versao.
+    /// </summary>
+    Task<bool> ReservarComBaixaAtomicaAsync(
+        ReservaEstoque reserva,
+        Produto produtoDebitado,
+        EventoOutbox evento,
+        CancellationToken ct = default);
 }
 
 public interface IRepositorioEventos
@@ -159,26 +171,40 @@ public class RepositorioDynamoDBProdutos : IRepositorioProdutos
         }
     }
 
+    /// <summary>
+    /// Update otimista do produto: so aplica se `versao` ainda for a lida.
+    /// Compartilhado entre AtualizarProdutoAsync e a transacao de reserva.
+    /// </summary>
+    internal static Update CriarUpdateProduto(string tableName, Produto produto) => new()
+    {
+        TableName = tableName,
+        Key = new Dictionary<string, AttributeValue>
+        {
+            ["PK"] = new AttributeValue($"PRODUTO#{produto.Id}"),
+            ["SK"] = new AttributeValue("#METADATA")
+        },
+        ConditionExpression = "versao = :versao_antiga",
+        UpdateExpression = "SET saldo = :saldo, ativo = :ativo, versao = :versao_nova, GSI2_PK = :status",
+        ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+        {
+            [":saldo"] = new AttributeValue { N = produto.Saldo.ToString() },
+            [":ativo"] = new AttributeValue { BOOL = produto.Ativo },
+            [":versao_antiga"] = new AttributeValue { N = produto.Versao.ToString() },
+            [":versao_nova"] = new AttributeValue { N = (produto.Versao + 1).ToString() },
+            [":status"] = new AttributeValue($"STATUS#{(produto.Ativo ? "ATIVO" : "INATIVO")}")
+        }
+    };
+
     public async Task AtualizarProdutoAsync(Produto produto, CancellationToken ct = default)
     {
+        var update = CriarUpdateProduto(_tableName, produto);
         var request = new UpdateItemRequest
         {
-            TableName = _tableName,
-            Key = new Dictionary<string, AttributeValue>
-            {
-                ["PK"] = new AttributeValue($"PRODUTO#{produto.Id}"),
-                ["SK"] = new AttributeValue("#METADATA")
-            },
-            ConditionExpression = "versao = :versao_antiga",
-            UpdateExpression = "SET saldo = :saldo, ativo = :ativo, versao = :versao_nova, GSI2_PK = :status",
-            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
-            {
-                [":saldo"] = new AttributeValue { N = produto.Saldo.ToString() },
-                [":ativo"] = new AttributeValue { BOOL = produto.Ativo },
-                [":versao_antiga"] = new AttributeValue { N = produto.Versao.ToString() },
-                [":versao_nova"] = new AttributeValue { N = (produto.Versao + 1).ToString() },
-                [":status"] = new AttributeValue($"STATUS#{(produto.Ativo ? "ATIVO" : "INATIVO")}")
-            }
+            TableName = update.TableName,
+            Key = update.Key,
+            ConditionExpression = update.ConditionExpression,
+            UpdateExpression = update.UpdateExpression,
+            ExpressionAttributeValues = update.ExpressionAttributeValues
         };
 
         try
@@ -214,15 +240,26 @@ public class RepositorioDynamoDBReservas : IRepositorioReservas
 {
     private readonly IAmazonDynamoDB _client;
     private readonly string _tableName;
+    private readonly string _eventsTableName;
     private readonly ILogger<RepositorioDynamoDBReservas> _logger;
 
     public RepositorioDynamoDBReservas(
         IAmazonDynamoDB client,
         string tableName,
         ILogger<RepositorioDynamoDBReservas> logger)
+        : this(client, tableName, string.Empty, logger)
+    {
+    }
+
+    public RepositorioDynamoDBReservas(
+        IAmazonDynamoDB client,
+        string tableName,
+        string eventsTableName,
+        ILogger<RepositorioDynamoDBReservas> logger)
     {
         _client = client;
         _tableName = tableName;
+        _eventsTableName = eventsTableName;
         _logger = logger;
     }
 
@@ -235,7 +272,9 @@ public class RepositorioDynamoDBReservas : IRepositorioReservas
             {
                 ["PK"] = new AttributeValue($"RESERVA#{id}"),
                 ["SK"] = new AttributeValue("#METADATA")
-            }
+            },
+            // Leitura forte: usada na checagem de idempotencia logo apos um retry.
+            ConsistentRead = true
         };
 
         var response = await _client.GetItemAsync(request, ct);
@@ -272,10 +311,8 @@ public class RepositorioDynamoDBReservas : IRepositorioReservas
         return reservas;
     }
 
-    public async Task SalvarReservaAsync(ReservaEstoque reserva, CancellationToken ct = default)
+    internal static Dictionary<string, AttributeValue> CriarItemReserva(ReservaEstoque reserva) => new()
     {
-        var item = new Dictionary<string, AttributeValue>
-        {
             ["PK"] = new AttributeValue($"RESERVA#{reserva.Id}"),
             ["SK"] = new AttributeValue("#METADATA"),
             ["GSI1_PK"] = new AttributeValue($"NOTA#{reserva.NotaId}"),
@@ -288,16 +325,83 @@ public class RepositorioDynamoDBReservas : IRepositorioReservas
             ["quantidade"] = new AttributeValue { N = reserva.Quantidade.ToString() },
             ["status"] = new AttributeValue(reserva.Status),
             ["data_criacao"] = new AttributeValue(reserva.DataCriacao.ToString("o"))
-        };
+    };
 
+    public async Task SalvarReservaAsync(ReservaEstoque reserva, CancellationToken ct = default)
+    {
         var request = new PutItemRequest
         {
             TableName = _tableName,
-            Item = item
+            Item = CriarItemReserva(reserva)
         };
 
         await _client.PutItemAsync(request, ct);
         _logger.LogInformation("[RepositorioDynamoDB] Reserva {Id} salva para nota {NotaId}", reserva.Id, reserva.NotaId);
+    }
+
+    public async Task<bool> ReservarComBaixaAtomicaAsync(
+        ReservaEstoque reserva,
+        Produto produtoDebitado,
+        EventoOutbox evento,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(_eventsTableName))
+            throw new InvalidOperationException("Tabela de eventos nao configurada para a reserva atomica.");
+
+        var request = new TransactWriteItemsRequest
+        {
+            TransactItems =
+            [
+                // 0: reserva - Id deterministico por (nota, produto); existir = retry.
+                new TransactWriteItem
+                {
+                    Put = new Put
+                    {
+                        TableName = _tableName,
+                        Item = CriarItemReserva(reserva),
+                        ConditionExpression = "attribute_not_exists(PK)"
+                    }
+                },
+                // 1: baixa do produto com controle otimista de versao.
+                new TransactWriteItem
+                {
+                    Update = RepositorioDynamoDBProdutos.CriarUpdateProduto(_tableName, produtoDebitado)
+                },
+                // 2: evento de outbox na mesma transacao (nada de evento sem baixa ou baixa sem evento).
+                new TransactWriteItem
+                {
+                    Put = new Put
+                    {
+                        TableName = _eventsTableName,
+                        Item = RepositorioDynamoDBEventos.CriarItemOutbox(evento)
+                    }
+                }
+            ]
+        };
+
+        try
+        {
+            await _client.TransactWriteItemsAsync(request, ct);
+            _logger.LogInformation("[RepositorioDynamoDB] Reserva {Id} gravada atomicamente para nota {NotaId}", reserva.Id, reserva.NotaId);
+            return true;
+        }
+        catch (TransactionCanceledException ex)
+        {
+            var motivos = ex.CancellationReasons ?? [];
+            if (motivos.Count > 0 && motivos[0].Code == "ConditionalCheckFailed")
+            {
+                _logger.LogInformation("[RepositorioDynamoDB] Reserva {Id} ja existia; nenhuma baixa aplicada", reserva.Id);
+                return false;
+            }
+
+            if (motivos.Count > 1 && motivos[1].Code == "ConditionalCheckFailed")
+            {
+                throw new InvalidOperationException(
+                    $"Versão desatualizada para produto {produtoDebitado.Id} - conflito de concorrência detectado", ex);
+            }
+
+            throw;
+        }
     }
 
     private ReservaEstoque MapToReserva(Dictionary<string, AttributeValue> item)
@@ -333,14 +437,16 @@ public class RepositorioDynamoDBEventos : IRepositorioEventos
         _logger = logger;
     }
 
-    public async Task SalvarEventoOutboxAsync(EventoOutbox evento, CancellationToken ct = default)
+    internal static Dictionary<string, AttributeValue> CriarItemOutbox(EventoOutbox evento)
     {
         var ttl = DateTimeOffset.UtcNow.AddDays(7).ToUnixTimeSeconds();
 
         var item = new Dictionary<string, AttributeValue>
         {
             ["PK"] = new AttributeValue($"OUTBOX#{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}"),
-            ["SK"] = new AttributeValue(evento.Id.ToString()),
+            // SK unico por evento. Antes era evento.Id (sempre 0): dois eventos no
+            // mesmo segundo tinham a mesma chave e o segundo sobrescrevia o primeiro.
+            ["SK"] = new AttributeValue(Guid.NewGuid().ToString()),
             ["TTL"] = new AttributeValue { N = ttl.ToString() },
             ["tipo_evento"] = new AttributeValue(evento.TipoEvento),
             ["id_agregado"] = new AttributeValue(evento.IdAgregado.ToString()),
@@ -359,10 +465,15 @@ public class RepositorioDynamoDBEventos : IRepositorioEventos
             item["correlation_id"] = new AttributeValue(evento.CorrelationId);
         }
 
+        return item;
+    }
+
+    public async Task SalvarEventoOutboxAsync(EventoOutbox evento, CancellationToken ct = default)
+    {
         var request = new PutItemRequest
         {
             TableName = _eventsTableName,
-            Item = item
+            Item = CriarItemOutbox(evento)
         };
 
         await _client.PutItemAsync(request, ct);
