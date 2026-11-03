@@ -6,20 +6,52 @@ import (
 	"time"
 
 	"servico-faturamento/internal/dominio"
+	"servico-faturamento/internal/fiscal"
 
 	"github.com/jung-kurt/gofpdf"
 )
 
-type GeradorPDF struct{}
+// AvisoHomologacao e impresso em todo documento gerado fora de producao.
+const AvisoHomologacao = "AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL"
 
-func NewGeradorPDF() *GeradorPDF {
-	return &GeradorPDF{}
+type GeradorPDF struct {
+	ambiente fiscal.Ambiente
+	// semCompressao facilita inspecionar o conteudo do PDF em testes.
+	semCompressao bool
+}
+
+// NewGeradorPDF cria o gerador para o ambiente fiscal informado. O valor zero
+// (nao configurado) e tratado como homologacao.
+func NewGeradorPDF(ambiente fiscal.Ambiente) *GeradorPDF {
+	if ambiente != fiscal.AmbienteProducao {
+		ambiente = fiscal.AmbienteHomologacao
+	}
+	return &GeradorPDF{ambiente: ambiente}
+}
+
+// TextoAvisoAmbiente retorna o aviso impresso no documento ("" em producao).
+func (g *GeradorPDF) TextoAvisoAmbiente() string {
+	if g.ambiente.EhProducao() {
+		return ""
+	}
+	return AvisoHomologacao
 }
 
 // GerarNotaFiscal gera um PDF com os dados da nota fiscal
 func (g *GeradorPDF) GerarNotaFiscal(nota *dominio.NotaFiscal) ([]byte, error) {
 	pdf := gofpdf.New("P", "mm", "A4", "")
+	if g.semCompressao {
+		pdf.SetCompression(false)
+	}
 	pdf.AddPage()
+
+	if aviso := g.TextoAvisoAmbiente(); aviso != "" {
+		pdf.SetFont("Arial", "B", 12)
+		pdf.SetTextColor(200, 0, 0)
+		pdf.CellFormat(190, 8, aviso, "1", 0, "C", false, 0, "")
+		pdf.SetTextColor(0, 0, 0)
+		pdf.Ln(12)
+	}
 
 	// Header
 	pdf.SetFont("Arial", "B", 20)
