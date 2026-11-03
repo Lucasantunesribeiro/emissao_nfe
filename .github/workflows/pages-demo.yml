@@ -1,17 +1,13 @@
 name: Deploy - Demo frontend (GitHub Pages)
 
-# Publica o web-app no GitHub Pages (gratuito) apontando para o backend da demo
+# Proposta: publica o web-app no GitHub Pages (gratuito) apontando para o backend da demo
 # (Render free, ver render.yaml). Nunca roda em pull_request.
 # Pre-requisitos (uma vez, feitos pelo dono do repo):
 #   1. Settings > Pages > Source: "GitHub Actions".
 #   2. Settings > Secrets and variables > Actions > Variables:
 #      DEMO_API_URL = URL publica do servico no Render (ex.: https://emissao-nfe-demo.onrender.com)
+# Somente manual enquanto o Pages e DEMO_API_URL nao estiverem configurados.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "web-app/**"
-      - ".github/workflows/pages-demo.yml"
   workflow_dispatch:
 
 permissions:

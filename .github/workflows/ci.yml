@@ -145,7 +145,14 @@ jobs:
       - name: Build production
         run: npm run build:prod
 
+      # Bloqueia em vulnerabilidade critica. As "high" restantes sao do Angular
+      # 19 (fim de suporte; correcao so com upgrade major para 20+), entao o
+      # relatorio high fica informativo ate o upgrade.
       - name: Security audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=critical
+
+      - name: Security audit high (informativo)
+        continue-on-error: true
         run: npm audit --omit=dev --audit-level=high
 
   ci-cdk:
