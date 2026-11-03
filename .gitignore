@@ -8,8 +8,17 @@
 *.key
 *.pfx
 *.p12
+*.cer
+*.crt
+*.der
+*.jks
+*.keystore
+certificados/
+certificado*/
 credentials.json
 aws-exports.js
+!.env.example
+!**/.env.example
 
 # ==============================================
 # Node.js
@@ -57,7 +66,9 @@ dist/
 vendor/
 bootstrap
 bootstrap.*
+bootstrap-*
 upx-*
+*.tar.xz
 
 # ==============================================
 # CDK
