@@ -1,3 +1,5 @@
+> **Documento legado.** Descreve a fase com PostgreSQL, RabbitMQ e API HTTP (`cmd/api`), que nao existe mais. A arquitetura atual (Lambdas + DynamoDB + EventBridge/SQS) esta no README da raiz e em `docs/adr`.
+
 # Arquitetura Técnica - Serviço de Faturamento
 
 ## 📋 Visão Geral
