@@ -6,10 +6,29 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci-faturamento:
     name: Build and Test - Faturamento (Go)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # Testes de integracao de internal/repositorio (reserva atomica de estoque)
+      dynamodb:
+        image: amazon/dynamodb-local:2.5.2
+        ports:
+          - 8000:8000
+    env:
+      DYNAMODB_ENDPOINT: http://localhost:8000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
     defaults:
       run:
         working-directory: ./servico-faturamento
@@ -26,14 +45,10 @@ jobs:
         run: go mod download
 
       - name: Vet
-        run: |
-          go vet ./cmd/lambda/...
-          go vet ./cmd/lambda-pdf/...
-          go vet ./cmd/lambda-estoque-consumer/...
-          go vet ./internal/...
+        run: go vet ./...
 
-      - name: Test
-        run: go test ./...
+      - name: Test (unitarios + integracao com DynamoDB Local)
+        run: go test -count=1 ./...
 
       - name: Build - Lambda principal
         run: |
@@ -53,9 +68,16 @@ jobs:
             go build -tags lambda.norpc -o /tmp/bootstrap-estoque-consumer \
             ./cmd/lambda-estoque-consumer/main.go
 
+      - name: Build - Lambda Outbox
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags lambda.norpc -o /tmp/bootstrap-outbox \
+            ./cmd/lambda-outbox/main.go
+
   ci-estoque:
     name: Build and Test - Estoque (.NET)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: ./servico-estoque
@@ -73,6 +95,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('servico-estoque/**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       - name: Restore
         run: dotnet restore
@@ -94,6 +122,7 @@ jobs:
   ci-frontend:
     name: Build and Test - Frontend (Angular)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: ./web-app
@@ -122,6 +151,7 @@ jobs:
   ci-cdk:
     name: Synth - CDK Serverless
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: ./infra/cdk
@@ -160,3 +190,13 @@ jobs:
 
       - name: Synth (dev)
         run: npm run synth:serverless -- --context env=dev
+
+  ci-compose:
+    name: Validar docker compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose config
+        run: docker compose config -q
