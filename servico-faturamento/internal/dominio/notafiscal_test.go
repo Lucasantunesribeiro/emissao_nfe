@@ -20,7 +20,7 @@ func TestNotaFiscal_Fechar(t *testing.T) {
 					ID:            uuid.New(),
 					ProdutoID:     uuid.New(),
 					Quantidade:    5,
-					PrecoUnitario: 100.0,
+					PrecoUnitario: dominio.Centavos(10000),
 				},
 			},
 		}
@@ -78,35 +78,41 @@ func TestNotaFiscal_CalcularTotal(t *testing.T) {
 			{
 				ID:            uuid.New(),
 				Quantidade:    2,
-				PrecoUnitario: 50.0,
+				PrecoUnitario: dominio.Centavos(5000),
 			},
 			{
 				ID:            uuid.New(),
 				Quantidade:    3,
-				PrecoUnitario: 30.0,
+				PrecoUnitario: dominio.Centavos(3000),
 			},
 		},
 	}
 
-	total := nota.CalcularTotal()
-	esperado := 190.0 // (2*50) + (3*30)
+	total, err := nota.CalcularTotal()
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	esperado := dominio.Centavos(19000) // (2*50) + (3*30)
 
 	if total != esperado {
-		t.Errorf("esperava total %.2f, obteve %.2f", esperado, total)
+		t.Errorf("esperava total %s, obteve %s", esperado, total)
 	}
 }
 
 func TestItemNota_CalcularSubtotal(t *testing.T) {
 	item := dominio.ItemNota{
 		Quantidade:    5,
-		PrecoUnitario: 100.50,
+		PrecoUnitario: dominio.Centavos(10050),
 	}
 
-	subtotal := item.CalcularSubtotal()
-	esperado := 502.5
+	subtotal, err := item.CalcularSubtotal()
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	esperado := dominio.Centavos(50250)
 
 	if subtotal != esperado {
-		t.Errorf("esperava subtotal %.2f, obteve %.2f", esperado, subtotal)
+		t.Errorf("esperava subtotal %s, obteve %s", esperado, subtotal)
 	}
 }
 
@@ -117,7 +123,7 @@ func TestNotaFiscal_Fechar_StatusReservadaCancelada(t *testing.T) {
 			Numero: "NF-010",
 			Status: dominio.StatusNotaReservada,
 			Itens: []dominio.ItemNota{
-				{ID: uuid.New(), ProdutoID: uuid.New(), Quantidade: 1, PrecoUnitario: 10},
+				{ID: uuid.New(), ProdutoID: uuid.New(), Quantidade: 1, PrecoUnitario: dominio.Centavos(1000)},
 			},
 		}
 		if err := nota.Fechar(); err == nil {
@@ -131,7 +137,7 @@ func TestNotaFiscal_Fechar_StatusReservadaCancelada(t *testing.T) {
 			Numero: "NF-011",
 			Status: dominio.StatusNotaCancelada,
 			Itens: []dominio.ItemNota{
-				{ID: uuid.New(), ProdutoID: uuid.New(), Quantidade: 1, PrecoUnitario: 10},
+				{ID: uuid.New(), ProdutoID: uuid.New(), Quantidade: 1, PrecoUnitario: dominio.Centavos(1000)},
 			},
 		}
 		if err := nota.Fechar(); err == nil {
@@ -146,7 +152,34 @@ func TestNotaFiscal_CalcularTotal_Vazia(t *testing.T) {
 		Numero: "NF-012",
 		Itens:  []dominio.ItemNota{},
 	}
-	if total := nota.CalcularTotal(); total != 0 {
-		t.Errorf("esperava total 0 para nota sem itens, obteve %.2f", total)
+	if total, err := nota.CalcularTotal(); err != nil || total != 0 {
+		t.Errorf("esperava total 0 para nota sem itens, obteve %s (err=%v)", total, err)
+	}
+}
+func TestNotaFiscal_CalcularTotal_SemErroDePontoFlutuante(t *testing.T) {
+	// Em float64, 0.1 * 3 = 0.30000000000000004 e somas de centavos acumulam erro.
+	nota := &dominio.NotaFiscal{Itens: []dominio.ItemNota{
+		{Quantidade: 3, PrecoUnitario: dominio.Centavos(10)},
+		{Quantidade: 1, PrecoUnitario: dominio.Centavos(20)},
+	}}
+	total, err := nota.CalcularTotal()
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if total != dominio.Centavos(50) || total.String() != "0.50" {
+		t.Errorf("esperava 0.50, obteve %s", total)
+	}
+}
+
+func TestNotaFiscal_QuantidadesPorProduto_AgregaItensRepetidos(t *testing.T) {
+	p1, p2 := uuid.New(), uuid.New()
+	nota := &dominio.NotaFiscal{Itens: []dominio.ItemNota{
+		{ProdutoID: p1, Quantidade: 2},
+		{ProdutoID: p2, Quantidade: 1},
+		{ProdutoID: p1, Quantidade: 3},
+	}}
+	qtds := nota.QuantidadesPorProduto()
+	if len(qtds) != 2 || qtds[p1] != 5 || qtds[p2] != 1 {
+		t.Errorf("agregacao incorreta: %v", qtds)
 	}
 }
