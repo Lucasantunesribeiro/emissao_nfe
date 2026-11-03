@@ -73,15 +73,14 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Sobe DynamoDB Local (com as tabelas criadas por `scripts/local/criar-tabelas.sh`), API de estoque em `http://localhost:5001`, Lambda da API de faturamento sob o Runtime Interface Emulator em `http://localhost:9000/2015-03-31/functions/function/invocations` (recebe payload de evento do API Gateway, nao HTTP direto) e o web-app em `http://localhost:4200`.
+Sobe DynamoDB Local (com as tabelas criadas por `scripts/local/criar-tabelas.sh`), API de estoque em `http://localhost:5001`, API de faturamento (Lambda Go em modo HTTP) em `http://localhost:5002` e o web-app em `http://localhost:4200` (nginx repassa `/api/estoque` e `/api/faturamento`).
 
 ```bash
 curl -s http://localhost:5001/health
-curl -s -X POST http://localhost:9000/2015-03-31/functions/function/invocations \
-  -d '{"httpMethod":"GET","path":"/health","headers":{}}'
+curl -s http://localhost:5002/health
 ```
 
-Nao ha EventBridge, SQS, S3 nem Cognito locais: a saga assincrona e o PDF nao rodam no compose, e o web-app espera autenticacao/rotas da AWS.
+Nao ha EventBridge, SQS, S3 nem Cognito locais: no compose a reserva de estoque e o PDF rodam de forma sincrona dentro da API de faturamento (mesmo modo da demo) e o login fica desativado.
 
 ### Sem Docker
 
@@ -128,18 +127,53 @@ O CI (`.github/workflows/ci.yml`) roda tudo isso em `pull_request` e `push` para
 | `AWS_REGION` | SDKs AWS | - | Regiao |
 | `AWS_ENDPOINT_URL_DYNAMODB` | SDKs AWS | vazio | Aponta para o DynamoDB Local (compose) |
 | `DYNAMODB_ENDPOINT` | testes Go | vazio | Habilita testes de integracao Go |
+| `HTTP_ADDR` | Lambda Go da API | vazio | Se definido (ex.: `:8080`), serve HTTP comum em vez de rodar como Lambda |
+| `DEMO_SAGA_SINCRONA`, `DEMO_PDF_SINCRONO`, `DEMO_CRIAR_TABELAS` | modo HTTP | `false` | Reserva/PDF sincronos e criacao de tabelas (demo e compose) |
+| `ESTOQUE_INTERNAL_URL` | modo HTTP | vazio | Proxy de `/api/v1/produtos` e `/api/v1/reservas` para a API .NET |
+| `DEMO_PUBLIC_URL` | modo HTTP | Host da requisicao | Base dos links de PDF |
+| `API_ESTOQUE_URL`, `API_FATURAMENTO_URL`, `AUTH_ENABLED` | build do web-app | ver `.env.example` | Geram `src/assets/config/app-config.json` |
 
 Valores de exemplo, sem segredos, em `.env.example`. Credenciais reais ficam fora do repositorio (GitHub Actions Secrets / IAM).
 
-## Deploy
+## Deploy gratuito (demo publica)
 
-Os workflows `deploy-dev.yml` (push em `main` com mudancas em servicos/infra, ou manual) e `deploy-prod.yml` (manual, com confirmacao digitada) compilam as Lambdas, rodam `cdk deploy` e publicam o frontend. Nenhum deles roda em pull request. O CDK atual nao define `NFE_AMBIENTE`, portanto as Lambdas implantadas operam em homologacao.
+Caminho sem custo e sem AWS, pensado para portfolio:
+
+| Parte | Plataforma (plano gratis, sem cartao) | Arquivo |
+|---|---|---|
+| Backend (DynamoDB Local em memoria + API .NET + API Go num unico container) | Render, web service Docker `free` | `render.yaml`, `deploy/demo/Dockerfile`, `deploy/demo/start.sh` |
+| Frontend Angular | GitHub Pages | `.github/workflows/pages-demo.yml` |
+
+No container da demo a API Go roda em modo HTTP (`HTTP_ADDR`) e substitui o que na AWS e assincrono: a reserva de estoque e executada logo apos fechar a nota e o PDF e gerado na hora (`DEMO_SAGA_SINCRONA`, `DEMO_PDF_SINCRONO`; ver `servico-faturamento/cmd/lambda/http_demo.go`). O ambiente fiscal e sempre homologacao e o login (Cognito) fica desativado.
+
+Passo a passo (feito uma vez pelo dono do repositorio):
+
+1. **Render**: em <https://dashboard.render.com> entre com a conta GitHub, *New > Blueprint*, selecione este repositorio. O `render.yaml` cria o servico `emissao-nfe-demo`. Anote a URL (ex.: `https://emissao-nfe-demo.onrender.com`) e confira `GET <url>/health` (deve mostrar `"tpAmb":2`).
+2. **GitHub Pages**: *Settings > Pages > Source: GitHub Actions*.
+3. **Variavel**: *Settings > Secrets and variables > Actions > Variables*, crie `DEMO_API_URL` com a URL do passo 1 (sem barra no fim).
+4. Rode o workflow *Deploy - Demo frontend (GitHub Pages)* (*Actions > Run workflow*) ou faca push em `web-app/` na `main`. O site fica em `https://<usuario>.github.io/emissao_nfe/`.
+5. Se o dominio do frontend for outro, ajuste `CORS_ORIGINS` no `render.yaml` (ou no painel do Render).
+
+Limitacoes do plano gratis: o servico do Render hiberna apos ~15 min sem trafego (a primeira requisicao seguinte demora) e, como o banco e em memoria, os dados somem a cada hibernacao ou deploy. Instancia free tem 512 MB de RAM; o container limita o Java (`-Xmx128m`) e o heap .NET para caber.
+
+Para testar a mesma imagem localmente:
+
+```bash
+docker build -f deploy/demo/Dockerfile -t nfe-demo .
+docker run --rm -p 8080:8080 nfe-demo
+curl http://localhost:8080/health
+```
+
+## Deploy na AWS (manual)
+
+`deploy-dev.yml` e `deploy-prod.yml` sao apenas `workflow_dispatch` (o de producao exige digitar `DEPLOY-PROD`): compilam as Lambdas, rodam `cdk deploy` e publicam o frontend no S3/CloudFront. Nenhum roda em push ou pull request; usar exige credenciais AWS nos secrets e gera custo. O CDK atual nao define `NFE_AMBIENTE`, portanto as Lambdas implantadas operam em homologacao.
 
 ## Limitacoes conhecidas
 
 - Sem integracao SEFAZ, XML, assinatura, certificado ou regras tributarias.
 - Estoque e faturamento compartilham a mesma tabela DynamoDB.
-- O compose local nao emula EventBridge/SQS/S3/Cognito; a saga so roda na AWS.
+- O compose local e a demo nao emulam EventBridge/SQS/S3/Cognito; a saga e o PDF rodam de forma sincrona no modo HTTP, o que nao exercita retry/DLQ.
+- A demo gratuita guarda dados so em memoria e hiberna sem trafego.
 - `ReservarEstoqueHandler.ExecutarLote` (.NET) nao e exposto por nenhuma rota e nao tem as garantias de atomicidade/idempotencia do fluxo unitario.
 - A Lambda `cmd/lambda-outbox` (varredura com `Scan`) nao e provisionada pelo CDK serverless; se for reativada junto do `OutboxPublisher`, os eventos seriam publicados em dobro.
 - Ha arquivos legados da fase ECS/RDS/RabbitMQ (`infra/cdk/bin/nfe-infra.ts`, `infra/scripts/create-schemas.*`, `create-schemas-lambda.py`, `servico-faturamento/ARQUITETURA.md`) que nao representam o caminho atual.
