@@ -1,203 +1,153 @@
 # Emissao NFe
 
-Sistema distribuido com arquitetura serverless e fluxo orientado a eventos para cadastro de produtos, fechamento de notas e geracao assincrona de PDF. O projeto foi desenhado como portfolio tecnico com foco em AWS, integracao assincrona, Clean Architecture aplicada no servico .NET e operacao via GitHub Actions.
+Projeto de portfolio com arquitetura serverless na AWS para cadastro de produtos, controle de estoque, fechamento de notas e geracao assincrona de PDF, com saga coreografada por eventos.
 
-Importante: a implementacao atual nao e um emissor fiscal oficial. O repositorio nao integra com SEFAZ, nao gera XML fiscal oficial, nao usa certificado A1/A3 e nao aplica regras tributarias reais. Hoje ele representa um workflow de faturamento inspirado no dominio fiscal, util para demonstrar engenharia e arquitetura.
+> **Nao e um emissor fiscal oficial.** O codigo nao integra com a SEFAZ, nao gera nem assina XML de NF-e, nao usa certificado A1/A3 e nao calcula tributos. O "ambiente fiscal" existe apenas como configuracao segura por padrao (homologacao, `tpAmb=2`) e como aviso impresso no PDF.
 
-## Visao geral
+## Componentes
 
-- `servico-faturamento` em Go concentra a API de notas, o fluxo de confirmacao da saga, a geracao de PDF e parte da orquestracao assincrona.
-- `servico-estoque` em .NET 8 expõe a API de produtos e a reserva de estoque com persistencia em DynamoDB, outbox e testes automatizados.
-- `servico-estoque/OutboxPublisher` adiciona um worker .NET para publicar eventos do outbox via DynamoDB Streams para EventBridge.
-- `web-app` em Angular 19 consome as APIs, faz autenticacao com Cognito via Amplify e injeta `correlation-id` nas chamadas.
-- `infra/cdk` provisiona API Gateway, Lambda, DynamoDB, EventBridge, SQS, Cognito, S3, CloudFront, alarmes e dashboard.
+| Diretorio | Linguagem | O que faz |
+|---|---|---|
+| `servico-faturamento/` | Go 1.25 | 4 Lambdas: API de notas (`cmd/lambda`), consumer de reserva de estoque (`cmd/lambda-estoque-consumer`), gerador de PDF (`cmd/lambda-pdf`) e publicador de outbox por varredura (`cmd/lambda-outbox`, nao provisionado pelo CDK serverless atual) |
+| `servico-estoque/` | .NET 8 (testes em net9.0) | API de produtos e reservas (ASP.NET Core minimal API hospedada em Lambda) e `OutboxPublisher` (Lambda acionada por DynamoDB Streams) |
+| `web-app/` | Angular 19 | Frontend com login Cognito (Amplify) |
+| `infra/cdk/` | TypeScript | Stacks AWS CDK. Entrada ativa: `bin/nfe-infra-serverless.ts` |
 
-## Arquitetura ativa
+## Arquitetura
 
-```text
-Angular 19 + Cognito
-        |
-        v
-API Gateway + Lambda Authorizer
-        |
-        +--> Lambda Faturamento (Go)
-        |       |
-        |       +--> DynamoDB main table
-        |       +--> EventBridge / SQS / DLQ
-        |       +--> S3 (PDF)
-        |
-        +--> Lambda Estoque (.NET 8)
-                |
-                +--> DynamoDB main table
-                +--> Events table (outbox)
-                +--> DynamoDB Streams -> Outbox Publisher (.NET 8) -> EventBridge
+```mermaid
+flowchart LR
+    UI[web-app Angular] -->|JWT Cognito| APIGW[API Gateway + Lambda Authorizer]
+    APIGW --> FAT[Lambda Faturamento - Go]
+    APIGW --> EST[Lambda Estoque - .NET]
+
+    FAT --> MAIN[(DynamoDB main table)]
+    EST --> MAIN
+    FAT -->|outbox na mesma transacao| EVT[(DynamoDB events table)]
+    EST -->|outbox na mesma transacao| EVT
+
+    EVT -->|Streams| OUT[OutboxPublisher .NET]
+    OUT --> EB{{EventBridge}}
+
+    EB -->|Faturamento.NotaFechada| Q1[SQS reserva] --> CONS[Lambda EstoqueConsumer - Go]
+    CONS -->|TransactWriteItems: baixa + registro da reserva| MAIN
+    CONS -->|ReservaConfirmada / ReservaFalhou| EB
+    EB --> Q2[SQS confirmacao] --> FAT
+
+    EB -->|Faturamento.ImpressaoSolicitada| PDF[Lambda PDF - Go]
+    PDF --> S3[(S3 PDFs)]
+    PDF --> MAIN
 ```
 
-Pontos relevantes da implementacao ativa:
+### Fluxo de fechamento de nota (saga)
 
-- Event driven com `EventBridge + SQS + DLQ`.
-- Persistencia principal em `DynamoDB` com single-table design para o dominio operacional.
-- `Outbox pattern` no estoque com publicacao por `DynamoDB Streams`, substituindo o modelo antigo de `Scan` agendado.
-- `correlation-id` propagado entre frontend, APIs e eventos.
-- `X-Ray tracing`, dashboard e alarmes de latencia/erro provisionados via CDK.
-- `CORS` restrito a origens explicitas em vez de wildcard por sufixo.
+1. `PUT /api/v1/notas/{id}/fechar` muda a nota para `FECHADA` e grava `Faturamento.NotaFechada` no outbox na mesma transacao.
+2. O `OutboxPublisher` le o stream da tabela de eventos e publica no EventBridge (entrega *at-least-once*).
+3. O `EstoqueConsumer` debita o estoque de todos os itens numa unica `TransactWriteItems`, condicionada a `saldo >= quantidade` (nunca negativo) e a nao existir registro de reserva para a nota (idempotente). Publica `ReservaConfirmada` ou `ReservaFalhou`.
+4. A Lambda de faturamento move a nota de `FECHADA` para `RESERVADA` ou `CANCELADA` com escrita condicional; eventos reentregues viram no-op. Falhas voltam para a fila (`BatchItemFailures`) e, esgotadas as tentativas, para a DLQ.
 
-## Fluxos principais
+### Impressao
 
-### Cadastro e reserva de estoque
+`POST /api/v1/notas/{id}/imprimir` responde 202 com uma `SolicitacaoImpressao` `PENDENTE`; a Lambda de PDF gera o arquivo, envia para o S3 e marca `CONCLUIDA`. Fora de producao o PDF traz "AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL".
 
-1. O frontend autentica no Cognito e envia JWT para as rotas protegidas.
-2. A API .NET recebe a requisicao, valida o agregado `Produto` e debita o saldo.
-3. A reserva e persistida na main table do DynamoDB.
-4. Um evento de outbox e salvo na events table com `correlation_id`.
-5. O outbox publisher .NET consome o stream e publica no EventBridge.
+### Rotas
 
-### Fechamento de nota
+| Servico | Metodo e rota |
+|---|---|
+| Faturamento | `GET /health`, `GET/POST /api/v1/notas`, `GET /api/v1/notas/{id}`, `POST /api/v1/notas/{id}/itens`, `PUT /api/v1/notas/{id}/fechar`, `POST /api/v1/notas/{id}/imprimir`, `GET /api/v1/solicitacoes-impressao/{id}` |
+| Estoque | `GET /health`, `GET/POST /api/v1/produtos`, `GET /api/v1/produtos/{id}`, `POST /api/v1/reservas` |
 
-1. A API Go fecha a nota fiscal interna.
-2. O faturamento publica o evento de fechamento.
-3. O consumer de estoque processa a reserva.
-4. O faturamento recebe confirmacao ou rejeicao e atualiza o status da nota.
+## Regras de dominio garantidas pelo codigo
 
-### Impressao assincrona
+- **Homologacao por padrao.** `internal/fiscal.CarregarAmbiente`: sem `NFE_AMBIENTE` o ambiente e homologacao (`tpAmb=2`). Producao exige `NFE_AMBIENTE=producao` **e** `NFE_CONFIRMAR_PRODUCAO=EMITIR-NFE-COM-VALOR-FISCAL`; qualquer outro valor faz a Lambda falhar na inicializacao. `GET /health` expoe `ambienteFiscal` e `tpAmb`.
+- **Valores monetarios sem float.** Precos e totais sao `dominio.Dinheiro` (centavos em `int64`); JSON e DynamoDB sao lidos como texto decimal. Mais de 2 casas decimais retorna 400.
+- **Estoque nunca negativo e idempotente.** Consumer Go: transacao unica por nota com registro `NOTA#<id>/#RESERVA_ESTOQUE`. API .NET (`POST /api/v1/reservas`): Id de reserva deterministico por (nota, produto) e reserva + baixa + evento numa unica transacao; retry nao debita de novo.
+- **Controle otimista compartilhado.** Go e .NET incrementam o mesmo atributo `versao` do produto; ha teste de contrato entre os dois.
 
-1. O cliente solicita a impressao.
-2. O faturamento grava uma solicitacao pendente.
-3. O evento dispara a Lambda de PDF.
-4. O PDF e gerado e armazenado no S3.
-5. O frontend consulta o status ate receber o link final.
+## Como rodar
 
-## Stack utilizada
-
-### Backend
-
-- Go 1.25 para faturamento, PDF e parte da orquestracao assincrona.
-- .NET 8 para estoque e outbox publisher.
-- xUnit + Moq para testes do servico .NET.
-
-### Frontend
-
-- Angular 19 com standalone components.
-- AWS Amplify Auth para Cognito.
-- Jest para testes unitarios.
-
-### Infraestrutura
-
-- AWS CDK em TypeScript.
-- API Gateway, Lambda, DynamoDB, EventBridge, SQS, S3, CloudFront, Cognito.
-- CloudWatch Alarms e Dashboard.
-
-## Limites e trade-offs atuais
-
-- O dominio simula faturamento/NFe, mas nao cobre emissao fiscal oficial.
-- Estoque e faturamento ainda compartilham a mesma tabela principal no DynamoDB.
-- A orquestracao assincrona mais rica continua concentrada em Go, embora a trilha .NET tenha crescido com o outbox publisher.
-- Observabilidade melhorou com `correlation-id`, alarmes e X-Ray, mas ainda nao ha metricas de negocio ou tracing distribuido completo fim a fim.
-- Ainda existem arquivos legados de uma arquitetura antiga com ECS/RDS/RabbitMQ. Eles foram mantidos apenas como historico e nao representam o caminho operacional atual.
-
-## Executando localmente
-
-### Pre-requisitos
-
-- Go 1.25+
-- .NET SDK 9.0+ para compilar app + testes
-- Node.js 22+
-- Java 17+ para os testes de integracao com DynamoDB Local
-- AWS CLI v2
-
-### Backend Go
+### Docker Compose (local)
 
 ```bash
-cd servico-faturamento
-go test ./...
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build/bootstrap ./cmd/lambda/main.go
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build-pdf/bootstrap ./cmd/lambda-pdf/main.go
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build-estoque-consumer/bootstrap ./cmd/lambda-estoque-consumer/main.go
+cp .env.example .env
+docker compose up --build
 ```
 
-### Backend .NET
+Sobe DynamoDB Local (com as tabelas criadas por `scripts/local/criar-tabelas.sh`), API de estoque em `http://localhost:5001`, Lambda da API de faturamento sob o Runtime Interface Emulator em `http://localhost:9000/2015-03-31/functions/function/invocations` (recebe payload de evento do API Gateway, nao HTTP direto) e o web-app em `http://localhost:4200`.
 
 ```bash
-cd servico-estoque
-dotnet test Tests/ServicoEstoque.Tests.csproj
-dotnet publish ServicoEstoque.csproj -c Release -r linux-x64 --self-contained false -o publish-dynamodb
-dotnet publish OutboxPublisher/OutboxPublisher.csproj -c Release -r linux-x64 --self-contained false -o OutboxPublisher/publish
+curl -s http://localhost:5001/health
+curl -s -X POST http://localhost:9000/2015-03-31/functions/function/invocations \
+  -d '{"httpMethod":"GET","path":"/health","headers":{}}'
 ```
 
-Os testes de integracao do estoque baixam automaticamente o DynamoDB Local oficial da AWS e executam o fluxo contra tabelas efemeras.
+Nao ha EventBridge, SQS, S3 nem Cognito locais: a saga assincrona e o PDF nao rodam no compose, e o web-app espera autenticacao/rotas da AWS.
 
-### Frontend Angular
+### Sem Docker
+
+Pre-requisitos: Go 1.25, .NET SDK 8 e 9, Node 22, Java 17 (testes de integracao do .NET).
 
 ```bash
-cd web-app
-npm ci
-npm run test:ci
-npm run build:prod
-npm start
+# Go
+cd servico-faturamento && go vet ./... && go test ./...
+
+# .NET
+cd servico-estoque && dotnet build && dotnet test Tests/ServicoEstoque.Tests.csproj
+
+# Angular
+cd web-app && npm ci && npm run test:ci && npm run build:prod
+
+# CDK
+cd infra/cdk && npm ci && npm run build && npm run synth:serverless -- --context env=dev
 ```
 
-O frontend usa `src/assets/config/app-config.json`, gerado a partir de `app-config.example.json` e de variaveis de ambiente em tempo de build.
+## Testes
 
-### Infraestrutura
+| Suite | Comando | Observacao |
+|---|---|---|
+| Go unitarios | `go test ./...` em `servico-faturamento` | Dominio (Dinheiro, nota), ambiente fiscal, PDF, consumer de estoque, saga SQS, publicador EventBridge |
+| Go integracao | `DYNAMODB_ENDPOINT=http://localhost:8000 AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_REGION=us-east-1 go test ./internal/repositorio/` | Requer DynamoDB Local (`docker compose up dynamodb-local`). Sem `DYNAMODB_ENDPOINT` os testes sao pulados |
+| .NET | `dotnet test Tests/ServicoEstoque.Tests.csproj` | Unitarios (xUnit + Moq) e integracao: baixa automaticamente o DynamoDB Local oficial e precisa de `java` no PATH |
+| Angular | `npm run test:ci` em `web-app` | Jest |
 
-```bash
-cd infra/cdk
-npm ci
-npm run build
-npm run synth:serverless -- --context env=dev
-```
+O CI (`.github/workflows/ci.yml`) roda tudo isso em `pull_request` e `push` para `main`, com DynamoDB Local como service container para o Go.
+
+## Variaveis de ambiente
+
+| Variavel | Usada por | Padrao | Descricao |
+|---|---|---|---|
+| `NFE_AMBIENTE` | Lambdas Go (API, PDF) | `homologacao` | `homologacao`/`2` ou `producao`/`1` |
+| `NFE_CONFIRMAR_PRODUCAO` | Lambdas Go | vazio | Deve ser `EMITIR-NFE-COM-VALOR-FISCAL` para aceitar producao |
+| `DYNAMODB_TABLE_NAME` | Go e .NET | obrigatoria | Tabela principal (single-table) |
+| `DYNAMODB_EVENTS_TABLE_NAME` | Go e .NET | obrigatoria | Tabela de eventos/outbox |
+| `EVENT_BUS_NAME` | Go e OutboxPublisher | `nfe-events-dev` | Barramento EventBridge |
+| `PDF_BUCKET_NAME` | Lambda PDF | `nfe-pdfs-mock` | Bucket dos PDFs |
+| `CLOUDFRONT_DOMAIN` | Lambda PDF | vazio | Dominio usado na URL do PDF; vazio usa URL do S3 |
+| `CORS_ORIGINS` | Go e .NET | ver codigo | Origens permitidas, separadas por virgula |
+| `ENVIRONMENT`, `LOG_LEVEL` | Go | - | Rotulo do ambiente e nivel de log |
+| `AWS_REGION` | SDKs AWS | - | Regiao |
+| `AWS_ENDPOINT_URL_DYNAMODB` | SDKs AWS | vazio | Aponta para o DynamoDB Local (compose) |
+| `DYNAMODB_ENDPOINT` | testes Go | vazio | Habilita testes de integracao Go |
+
+Valores de exemplo, sem segredos, em `.env.example`. Credenciais reais ficam fora do repositorio (GitHub Actions Secrets / IAM).
 
 ## Deploy
 
-Os workflows em `.github/workflows` sao o caminho principal de deploy. Eles:
+Os workflows `deploy-dev.yml` (push em `main` com mudancas em servicos/infra, ou manual) e `deploy-prod.yml` (manual, com confirmacao digitada) compilam as Lambdas, rodam `cdk deploy` e publicam o frontend. Nenhum deles roda em pull request. O CDK atual nao define `NFE_AMBIENTE`, portanto as Lambdas implantadas operam em homologacao.
 
-- compilam as Lambdas Go ativas;
-- publicam a API .NET e o outbox publisher .NET;
-- fazem deploy do CDK serverless;
-- resolvem outputs do CloudFormation para montar o runtime config do frontend;
-- sincronizam o build Angular no bucket S3 e invalidam o CloudFront.
+## Limitacoes conhecidas
 
-Para execucao manual local, use `infra/scripts/deploy-serverless.sh`.
+- Sem integracao SEFAZ, XML, assinatura, certificado ou regras tributarias.
+- Estoque e faturamento compartilham a mesma tabela DynamoDB.
+- O compose local nao emula EventBridge/SQS/S3/Cognito; a saga so roda na AWS.
+- `ReservarEstoqueHandler.ExecutarLote` (.NET) nao e exposto por nenhuma rota e nao tem as garantias de atomicidade/idempotencia do fluxo unitario.
+- A Lambda `cmd/lambda-outbox` (varredura com `Scan`) nao e provisionada pelo CDK serverless; se for reativada junto do `OutboxPublisher`, os eventos seriam publicados em dobro.
+- Ha arquivos legados da fase ECS/RDS/RabbitMQ (`infra/cdk/bin/nfe-infra.ts`, `infra/scripts/create-schemas.*`, `create-schemas-lambda.py`, `servico-faturamento/ARQUITETURA.md`) que nao representam o caminho atual.
 
-## Qualidade e validacao
+## Decisoes de arquitetura
 
-Validacoes usadas no repositorio hoje:
-
-- `go test ./...` em `servico-faturamento`
-- `dotnet test Tests/ServicoEstoque.Tests.csproj` em `servico-estoque`
-- `npm run test:ci` e `npm run build:prod` em `web-app`
-- `npm audit --omit=dev --audit-level=high` em `web-app`
-- `npm run build` em `infra/cdk`
-
-No momento:
-
-- o frontend nao possui vulnerabilidades `high` em dependencias de producao;
-- o estoque possui testes unitarios e de integracao com DynamoDB Local;
-- a validacao operacional da stack ativa foi consolidada em `scripts/validation-commands.sh`.
-
-## Estrutura do repositorio
-
-```text
-servico-faturamento/      API de faturamento, PDF e consumers em Go
-servico-estoque/          API de estoque em .NET 8
-web-app/                  Frontend Angular 19
-infra/cdk/                Infraestrutura serverless em AWS CDK
-infra/scripts/            Scripts operacionais alinhados ao stack serverless
-scripts/                  Scripts utilitarios e validacoes
-```
-
-## Legado
-
-Alguns arquivos antigos de uma fase pre-serverless foram mantidos para referencia historica. Eles nao sao a fonte de verdade para deploy ou operacao atual. Sempre priorize:
-
-- `.github/workflows/*.yml`
-- `infra/cdk/bin/nfe-infra-serverless.ts`
-- `infra/scripts/deploy-serverless.sh`
-- `scripts/validation-commands.sh`
+Ver `docs/adr/`.
 
 ## Autor
 
-Lucas Antunes Ferreira
-
-- GitHub: [Lucasantunesribeiro](https://github.com/Lucasantunesribeiro/emissao_nfe)
-- LinkedIn: [linkedin.com/in/lucas-antunes-ribeiro](https://www.linkedin.com/in/lucas-antunes-ribeiro)
+Lucas Antunes Ferreira — [GitHub](https://github.com/Lucasantunesribeiro) · [LinkedIn](https://www.linkedin.com/in/lucas-antunes-ribeiro)
