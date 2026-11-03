@@ -135,7 +135,7 @@ O CI (`.github/workflows/ci.yml`) roda tudo isso em `pull_request` e `push` para
 
 Valores de exemplo, sem segredos, em `.env.example`. Credenciais reais ficam fora do repositorio (GitHub Actions Secrets / IAM).
 
-## Deploy gratuito (demo publica)
+## Deploy gratuito (proposta)
 
 Caminho sem custo e sem AWS, pensado para portfolio:
 
