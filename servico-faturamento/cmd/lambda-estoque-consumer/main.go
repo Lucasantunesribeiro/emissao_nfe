@@ -22,6 +22,7 @@ import (
 
 	"servico-faturamento/internal/dominio"
 	"servico-faturamento/internal/logger"
+	"servico-faturamento/internal/publicador"
 	"servico-faturamento/internal/repositorio"
 )
 
@@ -219,7 +220,7 @@ func (c *EstoqueConsumer) publishEvento(ctx context.Context, tipoEvento, notaID,
 	detail := reservaDetail{NotaID: notaID, Motivo: motivo, CorrelationID: correlationID}
 	detailJSON, _ := json.Marshal(detail)
 
-	_, err := c.ebClient.PutEvents(ctx, &eventbridge.PutEventsInput{
+	out, err := c.ebClient.PutEvents(ctx, &eventbridge.PutEventsInput{
 		Entries: []ebtypes.PutEventsRequestEntry{
 			{
 				EventBusName: aws.String(c.eventBusName),
@@ -230,6 +231,11 @@ func (c *EstoqueConsumer) publishEvento(ctx context.Context, tipoEvento, notaID,
 		},
 	})
 	if err != nil {
+		return fmt.Errorf("failed to publish %s: %w", tipoEvento, err)
+	}
+	// Falha parcial nao vem em err: sem esta checagem a mensagem SQS seria
+	// confirmada e a nota ficaria presa em FECHADA.
+	if err := publicador.VerificarResultadoPutEvents(out); err != nil {
 		return fmt.Errorf("failed to publish %s: %w", tipoEvento, err)
 	}
 	slog.Info("Event published", "eventType", tipoEvento, "notaId", notaID, "correlationId", correlationID)
