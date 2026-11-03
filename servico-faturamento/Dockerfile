@@ -1,36 +1,26 @@
-FROM golang:1.23-alpine AS builder
+# Imagem local de uma Lambda Go do servico-faturamento.
+# Em producao as Lambdas sao publicadas como zip (runtime provided.al2023) pelo CDK;
+# esta imagem serve para rodar/inspecionar localmente com o Runtime Interface
+# Emulator (RIE) que ja vem na imagem base oficial da AWS.
+#
+#   docker build --build-arg LAMBDA=lambda -t nfe-faturamento .
+#   docker run -p 9000:8080 --entrypoint /usr/local/bin/aws-lambda-rie nfe-faturamento ./bootstrap
+#
+# LAMBDA: lambda | lambda-pdf | lambda-estoque-consumer | lambda-outbox
+ARG GO_VERSION=1.25
 
-WORKDIR /app
+FROM golang:${GO_VERSION}-alpine AS builder
+ARG LAMBDA=lambda
+WORKDIR /src
 
-# copiar todo o código fonte primeiro
-COPY . .
-
-# gerar go.sum e baixar dependências
-RUN go mod tidy
+COPY go.mod go.sum ./
 RUN go mod download
 
-# build
-RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/servico-faturamento ./cmd/api
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux go build -tags lambda.norpc -trimpath -ldflags="-s -w" \
+      -o /out/bootstrap ./cmd/${LAMBDA}
 
-# final stage
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
-
-# SECURITY: Cria usuário não-privilegiado para rodar a aplicação
-RUN addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser
-
-WORKDIR /home/appuser
-
-COPY --from=builder /bin/servico-faturamento .
-
-# SECURITY: Muda dono dos arquivos para appuser
-RUN chown -R appuser:appuser /home/appuser
-
-# SECURITY: Executa como usuário não-root
-USER appuser
-
-EXPOSE 8080
-
-CMD ["./servico-faturamento"]
+FROM public.ecr.aws/lambda/provided:al2023
+COPY --from=builder /out/bootstrap ./bootstrap
+ENTRYPOINT ["./bootstrap"]

@@ -1,0 +1,7 @@
+build/
+build-*/
+bootstrap
+bootstrap-*
+*.test
+*.out
+.env

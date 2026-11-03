@@ -1,22 +1,19 @@
-FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS base
-WORKDIR /app
-EXPOSE 8080
-
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+# API de estoque (.NET 8). Fora da AWS Lambda, AddAWSLambdaHosting cai para o
+# Kestrel, entao a mesma aplicacao atende HTTP na porta 8080.
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# copiar csproj e restaurar dependências
 COPY ["ServicoEstoque.csproj", "./"]
-RUN dotnet restore
+RUN dotnet restore "ServicoEstoque.csproj"
 
-# copiar código fonte e buildar
 COPY . .
-RUN dotnet build "ServicoEstoque.csproj" -c Release -o /app/build
-
-FROM build AS publish
 RUN dotnet publish "ServicoEstoque.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
-FROM base AS final
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+COPY --from=build /app/publish .
+# Usuario nao-root ja existente na imagem oficial (.NET 8+)
+USER $APP_UID
 ENTRYPOINT ["dotnet", "ServicoEstoque.dll"]
