@@ -1,4 +1,4 @@
-package main
+package demohttp
 
 import (
 	"fmt"
@@ -18,11 +18,11 @@ func TestParaRequisicaoAPIGateway_CabecalhosMinusculosEQuery(t *testing.T) {
 	if req.HTTPMethod != http.MethodPost || req.Path != "/api/v1/notas/abc/imprimir" {
 		t.Fatalf("metodo/path incorretos: %s %s", req.HTTPMethod, req.Path)
 	}
-	// getHeaderValue procura a forma minuscula; Origin/Idempotency-Key precisam chegar.
-	if getHeaderValue(req.Headers, "Idempotency-Key") != "chave-12345" {
+	// O handler procura a forma minuscula; Origin/Idempotency-Key precisam chegar.
+	if req.Headers["idempotency-key"] != "chave-12345" {
 		t.Errorf("Idempotency-Key nao encontrado: %v", req.Headers)
 	}
-	if getHeaderValue(req.Headers, "origin") != "https://exemplo.github.io" {
+	if req.Headers["origin"] != "https://exemplo.github.io" {
 		t.Errorf("Origin nao encontrado: %v", req.Headers)
 	}
 	if req.QueryStringParameters["status"] != "ABERTA" || req.Body != `{"a":1}` {

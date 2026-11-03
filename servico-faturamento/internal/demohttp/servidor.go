@@ -1,5 +1,5 @@
-package main
-
+// Package demohttp implementa o modo HTTP da Lambda da API.
+//
 // Modo HTTP para demo gratuita e desenvolvimento local.
 //
 // Em producao esta Lambda recebe eventos do API Gateway/SQS. Fora da AWS
@@ -19,6 +19,8 @@ package main
 // Ativado somente quando HTTP_ADDR esta definido; sem ele a Lambda se comporta
 // exatamente como antes. O ambiente fiscal continua vindo de
 // fiscal.CarregarAmbiente (homologacao por padrao).
+
+package demohttp
 
 import (
 	"context"
@@ -44,6 +46,7 @@ import (
 	"github.com/google/uuid"
 
 	"servico-faturamento/internal/dominio"
+	"servico-faturamento/internal/fiscal"
 	"servico-faturamento/internal/pdf"
 	"servico-faturamento/internal/repositorio"
 )
@@ -55,8 +58,16 @@ var (
 	rotaImprimir = regexp.MustCompile(`^/api/v1/notas/([0-9a-fA-F-]{36})/imprimir/?$`)
 )
 
+// Config liga o servidor HTTP ao handler da Lambda (cmd/lambda) sem que este
+// pacote dependa do package main.
+type Config struct {
+	Handle   func(context.Context, events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error)
+	Repo     *repositorio.RepositorioDynamoDB
+	Ambiente fiscal.Ambiente
+}
+
 type servidorDemo struct {
-	h            *LambdaHandler
+	cfg          Config
 	estoque      http.Handler
 	sagaSincrona bool
 	pdfSincrono  bool
@@ -70,12 +81,12 @@ func envVerdadeiro(nome string) bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv(nome)), "true")
 }
 
-func novoServidorDemo(h *LambdaHandler) (*servidorDemo, error) {
+func novoServidorDemo(cfg Config) (*servidorDemo, error) {
 	s := &servidorDemo{
-		h:            h,
+		cfg:          cfg,
 		sagaSincrona: envVerdadeiro("DEMO_SAGA_SINCRONA"),
 		pdfSincrono:  envVerdadeiro("DEMO_PDF_SINCRONO"),
-		gerador:      pdf.NewGeradorPDF(h.ambiente),
+		gerador:      pdf.NewGeradorPDF(cfg.Ambiente),
 		pdfs:         map[string][]byte{},
 	}
 	if alvo := strings.TrimSpace(os.Getenv("ESTOQUE_INTERNAL_URL")); alvo != "" {
@@ -109,7 +120,7 @@ func (s *servidorDemo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	req := ParaRequisicaoAPIGateway(r, body)
 
-	resp, err := s.h.HandleRequest(r.Context(), req)
+	resp, err := s.cfg.Handle(r.Context(), req)
 	if err != nil {
 		slog.Error("Erro no handler HTTP", "error", err)
 		http.Error(w, `{"erro":"erro interno"}`, http.StatusInternalServerError)
@@ -134,7 +145,7 @@ func (s *servidorDemo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // ParaRequisicaoAPIGateway converte uma requisicao HTTP no evento que o API
-// Gateway entregaria. Cabecalhos ficam em minusculas (getHeaderValue procura
+// Gateway entregaria. Cabecalhos ficam em minusculas (o handler procura
 // primeiro a forma minuscula).
 func ParaRequisicaoAPIGateway(r *http.Request, body []byte) events.APIGatewayProxyRequest {
 	headers := make(map[string]string, len(r.Header))
@@ -157,7 +168,7 @@ func ParaRequisicaoAPIGateway(r *http.Request, body []byte) events.APIGatewayPro
 // reservarSincrono replica, sem SQS, o que o EstoqueConsumer + o handler da
 // saga fazem: baixa atomica e idempotente e transicao condicional da nota.
 func (s *servidorDemo) reservarSincrono(ctx context.Context, notaID uuid.UUID) {
-	repo := s.h.repo
+	repo := s.cfg.Repo
 	nota, err := repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil || nota == nil {
 		slog.Error("Demo: nota nao encontrada para reserva", "notaId", notaID, "error", err)
@@ -193,10 +204,10 @@ func (s *servidorDemo) gerarPDFSincrono(r *http.Request, corpo string) string {
 	}
 	ctx := r.Context()
 	falhar := func(msg string) string {
-		_ = s.h.repo.AtualizarSolicitacaoImpressao(ctx, sol.ID, "FALHOU", "", &msg)
+		_ = s.cfg.Repo.AtualizarSolicitacaoImpressao(ctx, sol.ID, "FALHOU", "", &msg)
 		return corpo
 	}
-	nota, err := s.h.repo.BuscarNotaPorID(ctx, sol.NotaID)
+	nota, err := s.cfg.Repo.BuscarNotaPorID(ctx, sol.NotaID)
 	if err != nil || nota == nil {
 		return falhar("nota nao encontrada")
 	}
@@ -207,7 +218,7 @@ func (s *servidorDemo) gerarPDFSincrono(r *http.Request, corpo string) string {
 	s.guardarPDF(sol.ID.String(), conteudo)
 
 	pdfURL := baseURLPublica(r) + "/demo/pdfs/" + sol.ID.String() + ".pdf"
-	if err := s.h.repo.AtualizarSolicitacaoImpressao(ctx, sol.ID, "CONCLUIDA", pdfURL, nil); err != nil {
+	if err := s.cfg.Repo.AtualizarSolicitacaoImpressao(ctx, sol.ID, "CONCLUIDA", pdfURL, nil); err != nil {
 		slog.Error("Demo: falha ao concluir solicitacao", "solicitacaoId", sol.ID, "error", err)
 		return corpo
 	}
@@ -306,7 +317,8 @@ func criarTabelasDemo(ctx context.Context, mainTable, eventsTable string) error 
 	return nil
 }
 
-func servirHTTP(h *LambdaHandler, addr string) error {
+// Servir inicia o servidor HTTP em addr (bloqueante).
+func Servir(addr string, cfg Config) error {
 	if envVerdadeiro("DEMO_CRIAR_TABELAS") {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -314,13 +326,13 @@ func servirHTTP(h *LambdaHandler, addr string) error {
 			return err
 		}
 	}
-	s, err := novoServidorDemo(h)
+	s, err := novoServidorDemo(cfg)
 	if err != nil {
 		return err
 	}
 	slog.Info("Modo HTTP (demo/local) ativo", "addr", addr, "sagaSincrona", s.sagaSincrona,
 		"pdfSincrono", s.pdfSincrono, "proxyEstoque", s.estoque != nil,
-		"ambienteFiscal", h.ambiente.String(), "tpAmb", h.ambiente.TpAmb())
+		"ambienteFiscal", cfg.Ambiente.String(), "tpAmb", cfg.Ambiente.TpAmb())
 	srv := &http.Server{Addr: addr, Handler: s, ReadHeaderTimeout: 10 * time.Second}
 	return srv.ListenAndServe()
 }

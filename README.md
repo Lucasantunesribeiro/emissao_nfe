@@ -144,14 +144,14 @@ Caminho sem custo e sem AWS, pensado para portfolio:
 | Backend (DynamoDB Local em memoria + API .NET + API Go num unico container) | Render, web service Docker `free` | `render.yaml`, `deploy/demo/Dockerfile`, `deploy/demo/start.sh` |
 | Frontend Angular | GitHub Pages | `.github/workflows/pages-demo.yml` |
 
-No container da demo a API Go roda em modo HTTP (`HTTP_ADDR`) e substitui o que na AWS e assincrono: a reserva de estoque e executada logo apos fechar a nota e o PDF e gerado na hora (`DEMO_SAGA_SINCRONA`, `DEMO_PDF_SINCRONO`; ver `servico-faturamento/cmd/lambda/http_demo.go`). O ambiente fiscal e sempre homologacao e o login (Cognito) fica desativado.
+No container da demo a API Go roda em modo HTTP (`HTTP_ADDR`) e substitui o que na AWS e assincrono: a reserva de estoque e executada logo apos fechar a nota e o PDF e gerado na hora (`DEMO_SAGA_SINCRONA`, `DEMO_PDF_SINCRONO`; ver `servico-faturamento/internal/demohttp/servidor.go`). O ambiente fiscal e sempre homologacao e o login (Cognito) fica desativado.
 
 Passo a passo (feito uma vez pelo dono do repositorio):
 
 1. **Render**: em <https://dashboard.render.com> entre com a conta GitHub, *New > Blueprint*, selecione este repositorio. O `render.yaml` cria o servico `emissao-nfe-demo`. Anote a URL (ex.: `https://emissao-nfe-demo.onrender.com`) e confira `GET <url>/health` (deve mostrar `"tpAmb":2`).
 2. **GitHub Pages**: *Settings > Pages > Source: GitHub Actions*.
 3. **Variavel**: *Settings > Secrets and variables > Actions > Variables*, crie `DEMO_API_URL` com a URL do passo 1 (sem barra no fim).
-4. Rode o workflow *Deploy - Demo frontend (GitHub Pages)* (*Actions > Run workflow*) ou faca push em `web-app/` na `main`. O site fica em `https://<usuario>.github.io/emissao_nfe/`.
+4. Rode o workflow *Deploy - Demo frontend (GitHub Pages)* (*Actions > Run workflow*; ele e so manual). O site fica em `https://<usuario>.github.io/emissao_nfe/`.
 5. Se o dominio do frontend for outro, ajuste `CORS_ORIGINS` no `render.yaml` (ou no painel do Render).
 
 Limitacoes do plano gratis: o servico do Render hiberna apos ~15 min sem trafego (a primeira requisicao seguinte demora) e, como o banco e em memoria, os dados somem a cada hibernacao ou deploy. Instancia free tem 512 MB de RAM; o container limita o Java (`-Xmx128m`) e o heap .NET para caber.
@@ -174,6 +174,7 @@ curl http://localhost:8080/health
 - Estoque e faturamento compartilham a mesma tabela DynamoDB.
 - O compose local e a demo nao emulam EventBridge/SQS/S3/Cognito; a saga e o PDF rodam de forma sincrona no modo HTTP, o que nao exercita retry/DLQ.
 - A demo gratuita guarda dados so em memoria e hiberna sem trafego.
+- O web-app usa Angular 19 (fim de suporte); `npm audit` aponta vulnerabilidades *high* no `@angular/*` que so se resolvem com upgrade major. O CI bloqueia apenas em *critical*.
 - `ReservarEstoqueHandler.ExecutarLote` (.NET) nao e exposto por nenhuma rota e nao tem as garantias de atomicidade/idempotencia do fluxo unitario.
 - A Lambda `cmd/lambda-outbox` (varredura com `Scan`) nao e provisionada pelo CDK serverless; se for reativada junto do `OutboxPublisher`, os eventos seriam publicados em dobro.
 - Ha arquivos legados da fase ECS/RDS/RabbitMQ (`infra/cdk/bin/nfe-infra.ts`, `infra/scripts/create-schemas.*`, `create-schemas-lambda.py`, `servico-faturamento/ARQUITETURA.md`) que nao representam o caminho atual.

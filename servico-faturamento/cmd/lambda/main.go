@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/google/uuid"
 
+	"servico-faturamento/internal/demohttp"
 	"servico-faturamento/internal/dominio"
 	"servico-faturamento/internal/fiscal"
 	"servico-faturamento/internal/logger"
@@ -607,9 +608,10 @@ func main() {
 		panic(err)
 	}
 
-	// Fora da AWS (demo gratuita / compose): serve HTTP comum. Ver http_demo.go.
+	// Fora da AWS (demo gratuita / compose): serve HTTP comum. Ver internal/demohttp.
 	if addr := os.Getenv("HTTP_ADDR"); addr != "" {
-		if err := servirHTTP(handler, addr); err != nil {
+		cfg := demohttp.Config{Handle: handler.HandleRequest, Repo: handler.repo, Ambiente: handler.ambiente}
+		if err := demohttp.Servir(addr, cfg); err != nil {
 			slog.Error("Servidor HTTP encerrado", "error", err)
 			os.Exit(1)
 		}

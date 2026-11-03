@@ -5,7 +5,7 @@
 #   - API de estoque (.NET 8, Kestrel) em 127.0.0.1:8081;
 #   - API de faturamento (Go) em modo HTTP na porta publica $PORT, que tambem
 #     repassa /api/v1/produtos e /api/v1/reservas para o estoque, executa a
-#     saga e o PDF de forma sincrona (ver servico-faturamento/cmd/lambda/http_demo.go).
+#     saga e o PDF de forma sincrona (ver servico-faturamento/internal/demohttp/servidor.go).
 #
 # Ambiente fiscal: SEMPRE homologacao (tpAmb=2). Nao ha integracao SEFAZ.
 #

@@ -4,7 +4,7 @@ Lambdas Go do faturamento. Visao geral, arquitetura e como rodar estao no [READM
 
 | Entrada | Funcao |
 |---|---|
-| `cmd/lambda` | API de notas e solicitacoes de impressao (API Gateway) e handler SQS da saga (`ReservaConfirmada`/`ReservaFalhou`). Com `HTTP_ADDR` serve HTTP comum (`http_demo.go`) |
+| `cmd/lambda` | API de notas e solicitacoes de impressao (API Gateway) e handler SQS da saga (`ReservaConfirmada`/`ReservaFalhou`). Com `HTTP_ADDR` serve HTTP comum (`internal/demohttp`) |
 | `cmd/lambda-estoque-consumer` | Reserva de estoque atomica e idempotente por nota a partir de `Faturamento.NotaFechada` |
 | `cmd/lambda-pdf` | Gera o PDF da nota (aviso de homologacao fora de producao) e grava no S3 |
 | `cmd/lambda-outbox` | Publicador de outbox por `Scan` (nao provisionado pelo CDK serverless atual) |

@@ -8,7 +8,7 @@
 #   - dynamodb-init: cria as tabelas main/events com o esquema do CDK
 #   - servico-estoque: API .NET 8 (Kestrel) em http://localhost:5001
 #   - servico-faturamento: Lambda Go da API em modo HTTP (HTTP_ADDR) em
-#       http://localhost:5002 (ver servico-faturamento/cmd/lambda/http_demo.go)
+#       http://localhost:5002 (ver servico-faturamento/internal/demohttp/servidor.go)
 #   - web-app: Angular servido por nginx em http://localhost:4200
 #
 # NAO ha EventBridge/SQS/S3/Cognito locais. Em vez deles, o modo HTTP executa
