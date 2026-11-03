@@ -105,11 +105,11 @@ func (r *RepositorioDynamoDB) BuscarItensDaNota(ctx context.Context, notaID uuid
 
 	// Temporary struct for unmarshaling with string IDs
 	type ItemDynamoDB struct {
-		ID            string  `dynamodbav:"ID"`
-		NotaID        string  `dynamodbav:"NotaID"`
-		ProdutoID     string  `dynamodbav:"ProdutoID"`
-		Quantidade    int     `dynamodbav:"Quantidade"`
-		PrecoUnitario float64 `dynamodbav:"PrecoUnitario"`
+		ID            string                `dynamodbav:"ID"`
+		NotaID        string                `dynamodbav:"NotaID"`
+		ProdutoID     string                `dynamodbav:"ProdutoID"`
+		Quantidade    int                   `dynamodbav:"Quantidade"`
+		PrecoUnitario attributevalue.Number `dynamodbav:"PrecoUnitario"`
 	}
 
 	var itensDDB []ItemDynamoDB
@@ -135,12 +135,18 @@ func (r *RepositorioDynamoDB) BuscarItensDaNota(ctx context.Context, notaID uuid
 			slog.Error("Invalid UUID in item ProdutoID", "produtoId", item.ProdutoID, "error", err)
 			continue
 		}
+		// Valor monetario lido como texto decimal e convertido para centavos,
+		// sem passar por float64. Valor invalido e erro (nao descartar item fiscal).
+		preco, err := dominio.ParseDinheiro(string(item.PrecoUnitario))
+		if err != nil {
+			return nil, fmt.Errorf("invalid PrecoUnitario in item %s: %w", item.ID, err)
+		}
 		itens = append(itens, dominio.ItemNota{
 			ID:            id,
 			NotaID:        nid,
 			ProdutoID:     pid,
 			Quantidade:    item.Quantidade,
-			PrecoUnitario: item.PrecoUnitario,
+			PrecoUnitario: preco,
 		})
 	}
 
@@ -214,16 +220,16 @@ func (r *RepositorioDynamoDB) CriarNota(ctx context.Context, nota *dominio.NotaF
 	}
 
 	item := map[string]types.AttributeValue{
-		"PK":           &types.AttributeValueMemberS{Value: fmt.Sprintf("NOTA#%s", nota.ID.String())},
-		"SK":           &types.AttributeValueMemberS{Value: "#METADATA"},
-		"GSI1_PK":      &types.AttributeValueMemberS{Value: fmt.Sprintf("NUMERO#%s", nota.Numero)},
-		"GSI2_PK":      &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", nota.Status)},
-		"GSI2_SK":      &types.AttributeValueMemberS{Value: nota.DataCriacao.Format(time.RFC3339)},
-		"entity_type":  &types.AttributeValueMemberS{Value: "NOTA"},
-		"ID":           &types.AttributeValueMemberS{Value: nota.ID.String()},
-		"Numero":       &types.AttributeValueMemberS{Value: nota.Numero},
-		"Status":       &types.AttributeValueMemberS{Value: nota.Status},
-		"DataCriacao":  &types.AttributeValueMemberS{Value: nota.DataCriacao.Format(time.RFC3339)},
+		"PK":          &types.AttributeValueMemberS{Value: fmt.Sprintf("NOTA#%s", nota.ID.String())},
+		"SK":          &types.AttributeValueMemberS{Value: "#METADATA"},
+		"GSI1_PK":     &types.AttributeValueMemberS{Value: fmt.Sprintf("NUMERO#%s", nota.Numero)},
+		"GSI2_PK":     &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", nota.Status)},
+		"GSI2_SK":     &types.AttributeValueMemberS{Value: nota.DataCriacao.Format(time.RFC3339)},
+		"entity_type": &types.AttributeValueMemberS{Value: "NOTA"},
+		"ID":          &types.AttributeValueMemberS{Value: nota.ID.String()},
+		"Numero":      &types.AttributeValueMemberS{Value: nota.Numero},
+		"Status":      &types.AttributeValueMemberS{Value: nota.Status},
+		"DataCriacao": &types.AttributeValueMemberS{Value: nota.DataCriacao.Format(time.RFC3339)},
 	}
 
 	if nota.DataFechada != nil {
@@ -253,7 +259,7 @@ func (r *RepositorioDynamoDB) AdicionarItem(ctx context.Context, item *dominio.I
 		"NotaID":        &types.AttributeValueMemberS{Value: item.NotaID.String()},
 		"ProdutoID":     &types.AttributeValueMemberS{Value: item.ProdutoID.String()},
 		"Quantidade":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", item.Quantidade)},
-		"PrecoUnitario": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", item.PrecoUnitario)},
+		"PrecoUnitario": &types.AttributeValueMemberN{Value: item.PrecoUnitario.String()},
 	}
 
 	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
@@ -299,12 +305,12 @@ func (r *RepositorioDynamoDB) FecharNota(ctx context.Context, notaID uuid.UUID, 
 				Put: &types.Put{
 					TableName: aws.String(r.eventsTableName),
 					Item: map[string]types.AttributeValue{
-						"PK":          &types.AttributeValueMemberS{Value: fmt.Sprintf("OUTBOX#%d", now.Unix())},
-						"SK":          &types.AttributeValueMemberS{Value: uuid.New().String()},
-						"TTL":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Add(7*24*time.Hour).Unix())},
-						"TipoEvento":  &types.AttributeValueMemberS{Value: "Faturamento.NotaFechada"},
-						"IdAgregado":  &types.AttributeValueMemberS{Value: notaID.String()},
-						"Payload":     &types.AttributeValueMemberS{Value: fmt.Sprintf(`{"notaId":"%s","timestamp":"%s","correlationId":"%s"}`, notaID.String(), now.Format(time.RFC3339), correlationID)},
+						"PK":             &types.AttributeValueMemberS{Value: fmt.Sprintf("OUTBOX#%d", now.Unix())},
+						"SK":             &types.AttributeValueMemberS{Value: uuid.New().String()},
+						"TTL":            &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Add(7*24*time.Hour).Unix())},
+						"TipoEvento":     &types.AttributeValueMemberS{Value: "Faturamento.NotaFechada"},
+						"IdAgregado":     &types.AttributeValueMemberS{Value: notaID.String()},
+						"Payload":        &types.AttributeValueMemberS{Value: fmt.Sprintf(`{"notaId":"%s","timestamp":"%s","correlationId":"%s"}`, notaID.String(), now.Format(time.RFC3339), correlationID)},
 						"DataOcorrencia": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
 					},
 				},
@@ -631,7 +637,7 @@ func (r *RepositorioDynamoDB) AtualizarStatusNota(ctx context.Context, notaID uu
 			"#status": "Status",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status":  &types.AttributeValueMemberS{Value: novoStatus},
+			":status": &types.AttributeValueMemberS{Value: novoStatus},
 			":gsi2pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", novoStatus)},
 		},
 	})
@@ -648,8 +654,8 @@ func (r *RepositorioDynamoDB) AtualizarSolicitacaoImpressao(ctx context.Context,
 
 	expr := "SET #status = :status, DataConclusao = :now, GSI2_PK = :gsi2pk"
 	vals := map[string]types.AttributeValue{
-		":status":  &types.AttributeValueMemberS{Value: status},
-		":now":     &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+		":status": &types.AttributeValueMemberS{Value: status},
+		":now":    &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
 		":gsi2pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", status)},
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -273,12 +274,18 @@ func (h *LambdaHandler) handleAddItem(ctx context.Context, notaIDStr string, req
 	}
 
 	var req struct {
-		ProdutoID     string  `json:"produtoId"`
-		Quantidade    int     `json:"quantidade"`
-		PrecoUnitario float64 `json:"precoUnitario"`
+		ProdutoID     string           `json:"produtoId"`
+		Quantidade    int              `json:"quantidade"`
+		PrecoUnitario dominio.Dinheiro `json:"precoUnitario"`
 	}
 
 	if err := json.Unmarshal([]byte(request.Body), &req); err != nil {
+		switch {
+		case errors.Is(err, dominio.ErrPrecisaoMonetaria):
+			return errorResponse(http.StatusBadRequest, "PrecoUnitario aceita no máximo 2 casas decimais", origin, correlationID), nil
+		case errors.Is(err, dominio.ErrValorMonetarioInvalido), errors.Is(err, dominio.ErrValorMonetarioForaDoLimite):
+			return errorResponse(http.StatusBadRequest, "PrecoUnitario inválido", origin, correlationID), nil
+		}
 		return errorResponse(http.StatusBadRequest, "Invalid JSON", origin, correlationID), nil
 	}
 
@@ -592,4 +599,3 @@ func main() {
 		return handler.HandleRequest(ctx, apiEvent)
 	})
 }
-

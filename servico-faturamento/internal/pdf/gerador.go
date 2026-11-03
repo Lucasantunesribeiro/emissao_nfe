@@ -75,17 +75,22 @@ func (g *GeradorPDF) GerarNotaFiscal(nota *dominio.NotaFiscal) ([]byte, error) {
 
 	// Itens
 	pdf.SetFont("Arial", "", 9)
-	var total float64
+	var total dominio.Dinheiro
 	for _, item := range nota.Itens {
-		subtotal := float64(item.Quantidade) * item.PrecoUnitario
-		total += subtotal
+		subtotal, err := item.CalcularSubtotal()
+		if err != nil {
+			return nil, fmt.Errorf("erro ao calcular subtotal do item %s: %w", item.ID, err)
+		}
+		if total, err = total.Somar(subtotal); err != nil {
+			return nil, fmt.Errorf("erro ao calcular total da nota: %w", err)
+		}
 
 		// Nome do produto (truncar se muito longo)
 		nomeProduto := item.ProdutoID.String()[:8] + "..."
 		pdf.CellFormat(80, 6, nomeProduto, "1", 0, "L", false, 0, "")
 		pdf.CellFormat(30, 6, fmt.Sprintf("%d", item.Quantidade), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(35, 6, fmt.Sprintf("R$ %.2f", item.PrecoUnitario), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(35, 6, fmt.Sprintf("R$ %.2f", subtotal), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(35, 6, item.PrecoUnitario.FormatarBRL(), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(35, 6, subtotal.FormatarBRL(), "1", 0, "R", false, 0, "")
 		pdf.Ln(6)
 	}
 
@@ -95,7 +100,7 @@ func (g *GeradorPDF) GerarNotaFiscal(nota *dominio.NotaFiscal) ([]byte, error) {
 	pdf.Cell(145, 10, "")
 	pdf.Cell(10, 10, "TOTAL:")
 	pdf.SetFont("Arial", "B", 14)
-	pdf.Cell(35, 10, fmt.Sprintf("R$ %.2f", total))
+	pdf.Cell(35, 10, total.FormatarBRL())
 	pdf.Ln(15)
 
 	// Footer
