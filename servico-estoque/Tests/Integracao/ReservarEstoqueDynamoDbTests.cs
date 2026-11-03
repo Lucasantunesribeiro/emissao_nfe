@@ -113,6 +113,49 @@ public sealed class ReservarEstoqueDynamoDbTests : IClassFixture<DynamoDbLocalFi
         Assert.Equal(notaId, payload!.NotaId);
         Assert.Equal(correlationId, payload.CorrelationId);
     }
+    [Fact]
+    public async Task AtualizarProduto_AposBaixaFeitaPeloConsumerGo_DeveDetectarConflitoDeVersao()
+    {
+        // Contrato entre servicos: o consumer Go (servico-faturamento) debita
+        // `saldo` e incrementa `versao` na mesma linha PRODUTO#<id>. Sem o
+        // incremento, esta escrita do .NET com dados lidos antes da baixa
+        // sobrescreveria o saldo (lost update).
+        await using var context = await _fixture.CreateContextAsync();
+
+        var produto = new Produto("SKU-IT-003", "Produto Concorrencia", 10);
+        await context.RepositorioProdutos.SalvarProdutoAsync(produto);
+
+        var lidoPeloDotNet = await context.RepositorioProdutos.BuscarPorIdAsync(produto.Id);
+        Assert.NotNull(lidoPeloDotNet);
+
+        // Mesma expressao usada por servico-faturamento/internal/repositorio/reserva_estoque.go
+        await context.Client.UpdateItemAsync(new UpdateItemRequest
+        {
+            TableName = context.ProdutosTableName,
+            Key = new Dictionary<string, AttributeValue>
+            {
+                ["PK"] = new AttributeValue($"PRODUTO#{produto.Id}"),
+                ["SK"] = new AttributeValue("#METADATA")
+            },
+            UpdateExpression = "SET saldo = saldo - :qty ADD versao :um",
+            ConditionExpression = "attribute_exists(PK) AND saldo >= :qty AND (attribute_not_exists(ativo) OR ativo = :ativo)",
+            ExpressionAttributeValues = new Dictionary<string, AttributeValue>
+            {
+                [":qty"] = new AttributeValue { N = "4" },
+                [":um"] = new AttributeValue { N = "1" },
+                [":ativo"] = new AttributeValue { BOOL = true }
+            }
+        });
+
+        Assert.True(lidoPeloDotNet!.DebitarEstoque(1).EhSucesso);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.RepositorioProdutos.AtualizarProdutoAsync(lidoPeloDotNet));
+        Assert.Contains("Versão desatualizada", ex.Message);
+
+        var atual = await context.RepositorioProdutos.BuscarPorIdAsync(produto.Id);
+        Assert.Equal(6, atual!.Saldo);
+        Assert.Equal((uint)1, atual.Versao);
+    }
 }
 
 public sealed class DynamoDbLocalFixture : IAsyncLifetime
@@ -397,6 +440,7 @@ public sealed class DynamoDbTestContext : IAsyncDisposable
     public RepositorioDynamoDBReservas RepositorioReservas { get; }
     public ReservarEstoqueHandler Handler { get; }
     public CorrelationContextAccessor CorrelationAccessor { get; }
+    public IAmazonDynamoDB Client => _client;
 
     public async Task<List<Dictionary<string, AttributeValue>>> ListarEventosPorAgregadoAsync(Guid agregadoId, CancellationToken cancellationToken = default)
     {
