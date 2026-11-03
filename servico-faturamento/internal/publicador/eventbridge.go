@@ -3,6 +3,8 @@ package publicador
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -62,11 +64,37 @@ func PublicarEvento(ctx context.Context, tipoEvento string, idAgregado string, p
 		return err
 	}
 
-	if len(result.Entries) > 0 && result.Entries[0].ErrorCode != nil {
-		slog.Error("EventBridge rejected event", "errorCode", *result.Entries[0].ErrorCode, "errorMessage", *result.Entries[0].ErrorMessage)
+	// Antes retornava `err` (nil) aqui: o evento rejeitado era tratado como publicado.
+	if err := VerificarResultadoPutEvents(result); err != nil {
+		slog.Error("EventBridge rejected event", "error", err, "eventType", tipoEvento)
 		return err
 	}
 
 	slog.Info("Event published to EventBridge", "eventType", tipoEvento, "aggregateId", idAgregado)
 	return nil
+}
+
+// ErrEventoRejeitado indica que o EventBridge respondeu sem erro de transporte,
+// mas rejeitou uma ou mais entradas (FailedEntryCount > 0).
+var ErrEventoRejeitado = errors.New("EventBridge rejeitou o evento")
+
+// VerificarResultadoPutEvents converte falha parcial do PutEvents em erro.
+//
+// PutEvents NAO retorna erro quando entradas individuais sao rejeitadas
+// (throttling, erro interno, payload invalido): o resultado vem em
+// FailedEntryCount e Entries[i].ErrorCode. Ignorar isso faz o chamador marcar o
+// evento como publicado (outbox) ou confirmar a mensagem SQS, perdendo o evento.
+func VerificarResultadoPutEvents(out *eventbridge.PutEventsOutput) error {
+	if out == nil {
+		return fmt.Errorf("%w: resposta vazia", ErrEventoRejeitado)
+	}
+	if out.FailedEntryCount == 0 {
+		return nil
+	}
+	for _, e := range out.Entries {
+		if e.ErrorCode != nil {
+			return fmt.Errorf("%w: %s: %s", ErrEventoRejeitado, aws.ToString(e.ErrorCode), aws.ToString(e.ErrorMessage))
+		}
+	}
+	return fmt.Errorf("%w: %d entrada(s) com falha", ErrEventoRejeitado, out.FailedEntryCount)
 }

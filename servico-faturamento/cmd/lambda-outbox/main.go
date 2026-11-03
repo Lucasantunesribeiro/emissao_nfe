@@ -17,6 +17,7 @@ import (
 	ebtypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 
 	"servico-faturamento/internal/logger"
+	"servico-faturamento/internal/publicador"
 )
 
 // OutboxProcessor lê eventos da tabela DynamoDB e publica no EventBridge
@@ -112,7 +113,7 @@ func (p *OutboxProcessor) HandleRequest(ctx context.Context) error {
 		payloadJSON, _ := json.Marshal(payloadObj)
 
 		// Publish to EventBridge
-		_, err := p.ebClient.PutEvents(ctx, &eventbridge.PutEventsInput{
+		out, err := p.ebClient.PutEvents(ctx, &eventbridge.PutEventsInput{
 			Entries: []ebtypes.PutEventsRequestEntry{
 				{
 					EventBusName: aws.String(p.eventBusName),
@@ -122,6 +123,11 @@ func (p *OutboxProcessor) HandleRequest(ctx context.Context) error {
 				},
 			},
 		})
+		if err == nil {
+			// Entrada rejeitada nao vem em err; sem isto o evento seria
+			// marcado como publicado e nunca reenviado.
+			err = publicador.VerificarResultadoPutEvents(out)
+		}
 		if err != nil {
 			slog.Error("Failed to publish event to EventBridge", "pk", pk, "eventType", tipoEvento, "error", err)
 			errs++

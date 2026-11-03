@@ -96,7 +96,7 @@ public sealed class Function
 
             context.Logger.LogLine($"Publishing outbox event {eventType} ({pk}/{sk}) correlationId={correlationId}");
 
-            await _eventBridge.PutEventsAsync(new PutEventsRequest
+            var resposta = await _eventBridge.PutEventsAsync(new PutEventsRequest
             {
                 Entries =
                 [
@@ -109,6 +109,16 @@ public sealed class Function
                     }
                 ]
             });
+
+            // PutEvents nao lanca excecao quando a entrada e rejeitada: a falha vem
+            // em FailedEntryCount. Sem esta checagem o evento seria marcado como
+            // publicado e perdido. Lancar faz o Lambda reprocessar o lote do stream.
+            if (resposta.FailedEntryCount is > 0)
+            {
+                var erro = resposta.Entries?.FirstOrDefault(e => !string.IsNullOrEmpty(e.ErrorCode));
+                throw new InvalidOperationException(
+                    $"EventBridge rejeitou o evento {eventType} ({pk}/{sk}): {erro?.ErrorCode} {erro?.ErrorMessage}");
+            }
 
             await _dynamoDb.UpdateItemAsync(new UpdateItemRequest
             {
