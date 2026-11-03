@@ -98,49 +98,70 @@ func (h *LambdaHandler) HandleRequest(ctx context.Context, request events.APIGat
 	}
 }
 
-// HandleSQSEvent processa eventos SQS da saga (ReservaConfirmada, ReservaFalhou)
-func (h *LambdaHandler) HandleSQSEvent(ctx context.Context, sqsEvent events.SQSEvent) error {
+// HandleSQSEvent processa eventos SQS da saga (ReservaConfirmada, ReservaFalhou).
+//
+// A fila usa reportBatchItemFailures (CDK): cada registro que falhar e
+// devolvido em BatchItemFailures para ser reentregue (e, esgotadas as
+// tentativas, ir para a DLQ). Antes, erros de DynamoDB eram apenas logados e a
+// mensagem era confirmada, deixando a nota presa em FECHADA.
+func (h *LambdaHandler) HandleSQSEvent(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
 	slog.Info("SQS event received", "recordCount", len(sqsEvent.Records))
+	return processarLoteSaga(ctx, h.repo.TransicionarStatusNota, sqsEvent), nil
+}
 
+// transicionarStatusFunc e a assinatura de RepositorioDynamoDB.TransicionarStatusNota.
+type transicionarStatusFunc func(ctx context.Context, notaID uuid.UUID, de, para string) (bool, error)
+
+func processarLoteSaga(ctx context.Context, transicionar transicionarStatusFunc, sqsEvent events.SQSEvent) events.SQSEventResponse {
+	var falhas []events.SQSBatchItemFailure
 	for _, record := range sqsEvent.Records {
-		// O body do SQS contém o evento EventBridge completo
-		var eb struct {
-			DetailType string          `json:"detail-type"`
-			Detail     json.RawMessage `json:"detail"`
+		if err := processarRegistroSaga(ctx, transicionar, record); err != nil {
+			slog.Error("Falha ao processar evento da saga", "messageId", record.MessageId, "error", err)
+			falhas = append(falhas, events.SQSBatchItemFailure{ItemIdentifier: record.MessageId})
 		}
-		if err := json.Unmarshal([]byte(record.Body), &eb); err != nil {
-			slog.Error("Failed to parse SQS record body", "messageId", record.MessageId, "error", err)
-			continue
-		}
+	}
+	return events.SQSEventResponse{BatchItemFailures: falhas}
+}
 
-		var detail struct {
-			NotaID        string `json:"notaId"`
-			Motivo        string `json:"motivo"`
-			CorrelationID string `json:"correlationId"`
-		}
-		_ = json.Unmarshal(eb.Detail, &detail)
+func processarRegistroSaga(ctx context.Context, transicionar transicionarStatusFunc, record events.SQSMessage) error {
+	// O body do SQS contém o evento EventBridge completo
+	var eb struct {
+		DetailType string          `json:"detail-type"`
+		Detail     json.RawMessage `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(record.Body), &eb); err != nil {
+		return fmt.Errorf("body SQS invalido: %w", err)
+	}
 
-		switch eb.DetailType {
-		case "ReservaConfirmada":
-			slog.Info("Reserva confirmada — atualizando nota", "notaId", detail.NotaID)
-			if notaID, err := uuid.Parse(detail.NotaID); err == nil {
-				// Condicional: so FECHADA -> RESERVADA (evento reentregue/atrasado vira no-op).
-				if _, err := h.repo.TransicionarStatusNota(ctx, notaID, dominio.StatusNotaFechada, dominio.StatusNotaReservada); err != nil {
-					slog.Error("Failed to update nota to RESERVADA", "notaId", notaID, "error", err)
-				}
-			}
+	var para string
+	switch eb.DetailType {
+	case "ReservaConfirmada":
+		para = dominio.StatusNotaReservada
+	case "ReservaFalhou":
+		para = dominio.StatusNotaCancelada
+	default:
+		slog.Warn("Unknown SQS event type", "detailType", eb.DetailType, "messageId", record.MessageId)
+		return nil
+	}
 
-		case "ReservaFalhou":
-			slog.Warn("Reserva falhou — cancelando nota", "notaId", detail.NotaID, "motivo", detail.Motivo)
-			if notaID, err := uuid.Parse(detail.NotaID); err == nil {
-				if _, err := h.repo.TransicionarStatusNota(ctx, notaID, dominio.StatusNotaFechada, dominio.StatusNotaCancelada); err != nil {
-					slog.Error("Failed to update nota to CANCELADA", "notaId", notaID, "error", err)
-				}
-			}
+	var detail struct {
+		NotaID        string `json:"notaId"`
+		Motivo        string `json:"motivo"`
+		CorrelationID string `json:"correlationId"`
+	}
+	if err := json.Unmarshal(eb.Detail, &detail); err != nil {
+		return fmt.Errorf("detail invalido em %s: %w", eb.DetailType, err)
+	}
+	notaID, err := uuid.Parse(detail.NotaID)
+	if err != nil {
+		return fmt.Errorf("notaId invalido em %s: %w", eb.DetailType, err)
+	}
 
-		default:
-			slog.Warn("Unknown SQS event type", "detailType", eb.DetailType, "messageId", record.MessageId)
-		}
+	slog.Info("Evento da saga recebido — atualizando nota", "detailType", eb.DetailType, "notaId", notaID,
+		"motivo", detail.Motivo, "correlationId", detail.CorrelationID)
+	// Condicional: so FECHADA -> RESERVADA/CANCELADA (evento reentregue/atrasado vira no-op).
+	if _, err := transicionar(ctx, notaID, dominio.StatusNotaFechada, para); err != nil {
+		return fmt.Errorf("atualizar nota %s para %s: %w", notaID, para, err)
 	}
 	return nil
 }
@@ -600,7 +621,7 @@ func main() {
 			if err := json.Unmarshal(rawEvent, &sqsEvent); err != nil {
 				return nil, err
 			}
-			return nil, handler.HandleSQSEvent(ctx, sqsEvent)
+			return handler.HandleSQSEvent(ctx, sqsEvent)
 		}
 
 		var apiEvent events.APIGatewayProxyRequest
