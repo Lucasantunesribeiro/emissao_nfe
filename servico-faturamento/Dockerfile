@@ -5,6 +5,7 @@
 #
 #   docker build --build-arg LAMBDA=lambda -t nfe-faturamento .
 #   docker run -p 9000:8080 --entrypoint /usr/local/bin/aws-lambda-rie nfe-faturamento ./bootstrap
+#   docker run -p 5002:8080 -e HTTP_ADDR=:8080 nfe-faturamento   # HTTP comum (ver cmd/lambda/http_demo.go)
 #
 # LAMBDA: lambda | lambda-pdf | lambda-estoque-consumer | lambda-outbox
 ARG GO_VERSION=1.25
