@@ -10,14 +10,14 @@ Sistema de Emissão de Nota Fiscal Eletrônica (NFe) — a Brazilian electronic 
 
 **Microservices:**
 - `servico-faturamento/` — Go 1.25, 4 Lambda functions (API, Outbox, PDF, EstoqueConsumer)
-- `servico-estoque/` — .NET 9, Lambda, handles inventory/products via DynamoDB
-- `web-app/` — Angular 17 + TailwindCSS, hosted on S3/CloudFront
+- `servico-estoque/` — .NET 8 (testes em net9.0), Lambda, handles inventory/products via DynamoDB
+- `web-app/` — Angular 19 + TailwindCSS, hosted on S3/CloudFront
 - `infra/cdk/` — AWS CDK (TypeScript), deploys all stacks
 
 **Infrastructure (serverless only):**
 - API Gateway (HTTP) → Lambda → DynamoDB (single-table design)
 - EventBridge → SQS → Lambda (async event processing / saga choreography)
-- DynamoDB Streams → Outbox Lambda → EventBridge (exactly-once delivery)
+- DynamoDB Streams → Outbox Lambda → EventBridge (at-least-once; consumers must be idempotent)
 - Cognito User Pool + Lambda Authorizer (JWT validation on all routes except /health)
 - CloudWatch Alarms on DLQ and Lambda errors
 - Active CDK entry: `infra/cdk/bin/nfe-infra-serverless.ts` (ignore `nfe-infra.ts` — legacy ECS/Fargate)
@@ -85,15 +85,15 @@ npm run deploy:serverless:dev               # deploy to dev
 ## Deploy Frontend to Production
 ```bash
 cd web-app && npm run build:prod
-aws s3 sync dist/web-app/ s3://nfe-frontend-dev-246599827442/ --delete
-aws cloudfront create-invalidation --distribution-id E3GS1ORK9UYGOX --paths "/*"
+aws s3 sync dist/web-app/ s3://"$FRONTEND_BUCKET_NAME"/ --delete
+aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" --paths "/*"
 ```
 
 ## Key Architectural Decisions
 
 **DynamoDB single-table design:** All entities share one table. Access patterns are encoded via `PK`/`SK` + GSI1/GSI2. Add new access patterns via GSI, not new tables.
 
-**Outbox pattern:** Events are written to DynamoDB atomically with the business operation, then published to EventBridge by a separate Lambda triggered via DynamoDB Streams. This ensures exactly-once delivery.
+**Outbox pattern:** Events are written to DynamoDB atomically with the business operation, then published to EventBridge by a separate Lambda triggered via DynamoDB Streams. Delivery is at-least-once: consumers must be idempotent (see docs/adr).
 
 **SQS multiplexing:** The faturamento Lambda (`cmd/lambda/main.go`) handles both `APIGatewayProxyRequest` (HTTP routes) and `SQSEvent` (saga responses) by detecting the event type via `json.RawMessage` inspection. The estoque consumer is a separate Lambda (`cmd/lambda-estoque-consumer/main.go`).
 

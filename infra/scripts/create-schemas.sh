@@ -15,11 +15,12 @@ set -e
 echo "🗄️  Criando schemas no RDS PostgreSQL..."
 
 # Configurações
-RDS_ENDPOINT="nfe-db-dev.cch2gou443t0.us-east-1.rds.amazonaws.com"
-DB_NAME="nfe_db"
-DB_USER="postgres"
-SECRET_ARN="arn:aws:secretsmanager:us-east-1:212051644015:secret:nfe/db/credentials-dev-worXqM"
-REGION="us-east-1"
+# Identificadores de infraestrutura vem do ambiente (nao versionar ARNs/endpoints reais).
+RDS_ENDPOINT="${RDS_ENDPOINT:?defina RDS_ENDPOINT}"
+DB_NAME="${DB_NAME:-nfe_db}"
+DB_USER="${DB_USER:-postgres}"
+SECRET_ARN="${DB_SECRET_ARN:?defina DB_SECRET_ARN (ARN do segredo no Secrets Manager)}"
+REGION="${AWS_REGION:-us-east-1}"
 
 # Recuperar senha do Secrets Manager
 echo "📥 Recuperando senha do Secrets Manager..."
@@ -82,4 +83,4 @@ echo ""
 echo "Próximos passos:"
 echo "1. Executar migrations do serviço Faturamento (Go)"
 echo "2. Executar migrations do serviço Estoque (.NET)"
-echo "3. Testar APIs: https://ilbswtmp4m.execute-api.us-east-1.amazonaws.com/dev/health"
+echo "3. Testar APIs: <URL do API Gateway>/health"
