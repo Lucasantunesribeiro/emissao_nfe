@@ -607,6 +607,15 @@ func main() {
 		panic(err)
 	}
 
+	// Fora da AWS (demo gratuita / compose): serve HTTP comum. Ver http_demo.go.
+	if addr := os.Getenv("HTTP_ADDR"); addr != "" {
+		if err := servirHTTP(handler, addr); err != nil {
+			slog.Error("Servidor HTTP encerrado", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Multiplex: detecta SQS vs API Gateway pelo campo Records[].eventSource
 	lambda.Start(func(ctx context.Context, rawEvent json.RawMessage) (interface{}, error) {
 		var probe struct {
