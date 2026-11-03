@@ -403,46 +403,6 @@ func (r *RepositorioDynamoDB) listarTodasNotas(ctx context.Context) ([]dominio.N
 	return unmarshalNotas(result.Items)
 }
 
-// MarcarMensagemProcessada marks a message as processed for idempotency
-func (r *RepositorioDynamoDB) MarcarMensagemProcessada(ctx context.Context, idMensagem string) error {
-	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
-
-	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(r.eventsTableName),
-		Item: map[string]types.AttributeValue{
-			"PK":             &types.AttributeValueMemberS{Value: fmt.Sprintf("IDEM#%s", idMensagem)},
-			"SK":             &types.AttributeValueMemberS{Value: "#METADATA"},
-			"TTL":            &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
-			"IdMensagem":     &types.AttributeValueMemberS{Value: idMensagem},
-			"DataProcessada": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
-		},
-		ConditionExpression: aws.String("attribute_not_exists(PK)"),
-	})
-
-	if err != nil {
-		// Conditional check failed means message already processed
-		return fmt.Errorf("message already processed: %w", err)
-	}
-
-	return nil
-}
-
-// MensagemJaProcessada checks if a message was already processed
-func (r *RepositorioDynamoDB) MensagemJaProcessada(ctx context.Context, idMensagem string) (bool, error) {
-	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(r.eventsTableName),
-		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("IDEM#%s", idMensagem)},
-			"SK": &types.AttributeValueMemberS{Value: "#METADATA"},
-		},
-	})
-	if err != nil {
-		return false, fmt.Errorf("error checking message: %w", err)
-	}
-
-	return result.Item != nil, nil
-}
-
 // BuscarSolicitacaoPorChave finds a print request by idempotency key
 func (r *RepositorioDynamoDB) BuscarSolicitacaoPorChave(ctx context.Context, chaveIdempotencia string) (*dominio.SolicitacaoImpressao, error) {
 	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
@@ -624,30 +584,6 @@ func (r *RepositorioDynamoDB) BuscarSaldoProduto(ctx context.Context, produtoID 
 	return saldo, true, nil
 }
 
-// AtualizarStatusNota updates the status of a nota
-func (r *RepositorioDynamoDB) AtualizarStatusNota(ctx context.Context, notaID uuid.UUID, novoStatus string) error {
-	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(r.tableName),
-		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("NOTA#%s", notaID.String())},
-			"SK": &types.AttributeValueMemberS{Value: "#METADATA"},
-		},
-		UpdateExpression: aws.String("SET #status = :status, GSI2_PK = :gsi2pk"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "Status",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status": &types.AttributeValueMemberS{Value: novoStatus},
-			":gsi2pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("STATUS#%s", novoStatus)},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("error updating nota status: %w", err)
-	}
-	slog.Info("Nota status updated", "id", notaID, "status", novoStatus)
-	return nil
-}
-
 // AtualizarSolicitacaoImpressao updates a print request with result
 func (r *RepositorioDynamoDB) AtualizarSolicitacaoImpressao(ctx context.Context, solID uuid.UUID, status, pdfURL string, errMsg *string) error {
 	now := time.Now()
@@ -682,47 +618,6 @@ func (r *RepositorioDynamoDB) AtualizarSolicitacaoImpressao(ctx context.Context,
 		return fmt.Errorf("error updating print request: %w", err)
 	}
 	slog.Info("Print request updated", "id", solID, "status", status)
-	return nil
-}
-
-// ReservarEstoqueProduto atomically decrements product stock
-func (r *RepositorioDynamoDB) ReservarEstoqueProduto(ctx context.Context, produtoID uuid.UUID, quantidade int) error {
-	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(r.tableName),
-		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("PRODUTO#%s", produtoID.String())},
-			"SK": &types.AttributeValueMemberS{Value: "#METADATA"},
-		},
-		UpdateExpression:    aws.String("SET saldo = saldo - :qty"),
-		ConditionExpression: aws.String("attribute_exists(PK) AND saldo >= :qty"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", quantidade)},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reserve stock for produto %s: %w", produtoID, err)
-	}
-	slog.Info("Stock reserved", "produtoId", produtoID, "quantidade", quantidade)
-	return nil
-}
-
-// LiberarEstoqueProduto adds back stock (compensation for failed reservation)
-func (r *RepositorioDynamoDB) LiberarEstoqueProduto(ctx context.Context, produtoID uuid.UUID, quantidade int) error {
-	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(r.tableName),
-		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("PRODUTO#%s", produtoID.String())},
-			"SK": &types.AttributeValueMemberS{Value: "#METADATA"},
-		},
-		UpdateExpression: aws.String("SET saldo = saldo + :qty"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", quantidade)},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to release stock for produto %s: %w", produtoID, err)
-	}
-	slog.Info("Stock released (compensation)", "produtoId", produtoID, "quantidade", quantidade)
 	return nil
 }
 

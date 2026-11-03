@@ -124,7 +124,8 @@ func (h *LambdaHandler) HandleSQSEvent(ctx context.Context, sqsEvent events.SQSE
 		case "ReservaConfirmada":
 			slog.Info("Reserva confirmada — atualizando nota", "notaId", detail.NotaID)
 			if notaID, err := uuid.Parse(detail.NotaID); err == nil {
-				if err := h.repo.AtualizarStatusNota(ctx, notaID, dominio.StatusNotaReservada); err != nil {
+				// Condicional: so FECHADA -> RESERVADA (evento reentregue/atrasado vira no-op).
+				if _, err := h.repo.TransicionarStatusNota(ctx, notaID, dominio.StatusNotaFechada, dominio.StatusNotaReservada); err != nil {
 					slog.Error("Failed to update nota to RESERVADA", "notaId", notaID, "error", err)
 				}
 			}
@@ -132,7 +133,7 @@ func (h *LambdaHandler) HandleSQSEvent(ctx context.Context, sqsEvent events.SQSE
 		case "ReservaFalhou":
 			slog.Warn("Reserva falhou — cancelando nota", "notaId", detail.NotaID, "motivo", detail.Motivo)
 			if notaID, err := uuid.Parse(detail.NotaID); err == nil {
-				if err := h.repo.AtualizarStatusNota(ctx, notaID, dominio.StatusNotaCancelada); err != nil {
+				if _, err := h.repo.TransicionarStatusNota(ctx, notaID, dominio.StatusNotaFechada, dominio.StatusNotaCancelada); err != nil {
 					slog.Error("Failed to update nota to CANCELADA", "notaId", notaID, "error", err)
 				}
 			}

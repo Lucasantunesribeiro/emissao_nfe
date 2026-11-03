@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,13 +20,27 @@ import (
 	ebtypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 	"github.com/google/uuid"
 
+	"servico-faturamento/internal/dominio"
 	"servico-faturamento/internal/logger"
 	"servico-faturamento/internal/repositorio"
 )
 
+// repositorioReserva e o subconjunto do repositorio usado pelo consumer
+// (interface para permitir testes sem DynamoDB).
+type repositorioReserva interface {
+	BuscarNotaPorID(ctx context.Context, id uuid.UUID) (*dominio.NotaFiscal, error)
+	BuscarRegistroReserva(ctx context.Context, notaID uuid.UUID) (*repositorio.RegistroReserva, error)
+	ReservarEstoqueNota(ctx context.Context, notaID uuid.UUID, qtds map[uuid.UUID]int) error
+	RegistrarFalhaReserva(ctx context.Context, notaID uuid.UUID, motivo string) error
+}
+
+// publicadorFunc publica ReservaConfirmada/ReservaFalhou no EventBridge.
+type publicadorFunc func(ctx context.Context, tipoEvento, notaID, motivo, correlationID string) error
+
 // EstoqueConsumer reserva estoque para notas fechadas e publica ReservaConfirmada/ReservaFalhou
 type EstoqueConsumer struct {
-	repo         *repositorio.RepositorioDynamoDB
+	repo         repositorioReserva
+	publicar     publicadorFunc
 	ebClient     *eventbridge.Client
 	eventBusName string
 }
@@ -59,11 +74,13 @@ func NewEstoqueConsumer() (*EstoqueConsumer, error) {
 	ddbClient := dynamodb.NewFromConfig(cfg)
 	repo := repositorio.NewRepositorioDynamoDB(ddbClient, mainTableName, eventsTableName)
 
-	return &EstoqueConsumer{
+	c := &EstoqueConsumer{
 		repo:         repo,
 		ebClient:     eventbridge.NewFromConfig(cfg),
 		eventBusName: eventBusName,
-	}, nil
+	}
+	c.publicar = c.publishEvento
+	return c, nil
 }
 
 // HandleRequest processa batch de eventos SQS (EventBridge → SQS → Lambda)
@@ -84,6 +101,15 @@ func (c *EstoqueConsumer) HandleRequest(ctx context.Context, sqsEvent events.SQS
 	return events.SQSEventResponse{BatchItemFailures: failures}, nil
 }
 
+// processRecord reserva o estoque de uma nota fechada.
+//
+// Idempotencia: a chave e o notaId (nao o MessageId do SQS, que muda se o
+// EventBridge entregar o mesmo evento duas vezes). A baixa de todos os
+// produtos e o registro da reserva sao gravados numa unica transacao
+// DynamoDB, entao uma reentrega nunca debita de novo; ela apenas republica
+// o resultado ja registrado. Saldo nunca fica negativo (condicao saldo >= qty).
+// Erros transitorios (inclusive falha ao publicar) devolvem erro para o SQS
+// reentregar a mensagem.
 func (c *EstoqueConsumer) processRecord(ctx context.Context, record events.SQSMessage) error {
 	// O body do SQS contém o evento EventBridge completo
 	var eb struct {
@@ -111,13 +137,16 @@ func (c *EstoqueConsumer) processRecord(ctx context.Context, record events.SQSMe
 
 	slog.Info("Processing nota fechada", "notaId", notaID, "messageId", record.MessageId, "correlationId", detail.CorrelationID)
 
-	// Idempotência: verificar se já processamos este evento
-	if already, _ := c.repo.MensagemJaProcessada(ctx, record.MessageId); already {
-		slog.Info("Message already processed, skipping", "messageId", record.MessageId)
-		return nil
+	// Reentrega de nota ja processada: republica o mesmo resultado.
+	registro, err := c.repo.BuscarRegistroReserva(ctx, notaID)
+	if err != nil {
+		return err
+	}
+	if registro != nil {
+		slog.Info("Reserva ja registrada para a nota, republicando resultado", "notaId", notaID, "resultado", registro.Resultado)
+		return c.publicarRegistro(ctx, notaID, registro, detail.CorrelationID)
 	}
 
-	// Buscar nota com itens
 	nota, err := c.repo.BuscarNotaPorID(ctx, notaID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch nota %s: %w", notaID, err)
@@ -125,49 +154,59 @@ func (c *EstoqueConsumer) processRecord(ctx context.Context, record events.SQSMe
 	if nota == nil {
 		return fmt.Errorf("nota not found: %s", notaID)
 	}
-	if len(nota.Itens) == 0 {
-		slog.Warn("Nota has no items, confirming empty reservation", "notaId", notaID)
-		return c.publishEvento(ctx, "ReservaConfirmada", notaID.String(), "reserva sem itens", detail.CorrelationID)
+	if nota.Status != dominio.StatusNotaFechada {
+		// Nota ja reservada/cancelada (ou ainda aberta): nao movimenta estoque.
+		slog.Warn("Nota fora do status FECHADA, ignorando reserva", "notaId", notaID, "status", nota.Status)
+		return nil
 	}
 
-	// Tentar reservar estoque para cada item
-	var reservados []struct {
-		ProdutoID uuid.UUID
-		Quantidade int
-	}
+	err = c.repo.ReservarEstoqueNota(ctx, notaID, nota.QuantidadesPorProduto())
+	var semSaldo *repositorio.ErroSaldoInsuficiente
+	switch {
+	case err == nil:
+		slog.Info("Estoque reservado com sucesso", "notaId", notaID, "itens", len(nota.Itens))
+		return c.publicar(ctx, "ReservaConfirmada", notaID.String(), "", detail.CorrelationID)
 
-	var reservaFalhou bool
-	var motivoFalha string
+	case errors.Is(err, repositorio.ErrReservaJaRegistrada):
+		// Corrida com outra entrega do mesmo evento: a outra venceu.
+		return c.republicarRegistrado(ctx, notaID, detail.CorrelationID)
 
-	for _, item := range nota.Itens {
-		if err := c.repo.ReservarEstoqueProduto(ctx, item.ProdutoID, item.Quantidade); err != nil {
-			slog.Error("Failed to reserve stock", "produtoId", item.ProdutoID, "quantidade", item.Quantidade, "error", err)
-			reservaFalhou = true
-			motivoFalha = fmt.Sprintf("saldo insuficiente para produto %s", item.ProdutoID)
-			break
-		}
-		reservados = append(reservados, struct {
-			ProdutoID  uuid.UUID
-			Quantidade int
-		}{item.ProdutoID, item.Quantidade})
-	}
-
-	if reservaFalhou {
-		// Compensação: liberar itens já reservados
-		for _, r := range reservados {
-			if err := c.repo.LiberarEstoqueProduto(ctx, r.ProdutoID, r.Quantidade); err != nil {
-				slog.Error("Failed to release stock during compensation", "produtoId", r.ProdutoID, "error", err)
+	case errors.As(err, &semSaldo):
+		motivo := fmt.Sprintf("saldo insuficiente para produto %s", semSaldo.ProdutoID)
+		slog.Warn("Reserva recusada", "notaId", notaID, "motivo", motivo)
+		if err := c.repo.RegistrarFalhaReserva(ctx, notaID, motivo); err != nil {
+			if errors.Is(err, repositorio.ErrReservaJaRegistrada) {
+				return c.republicarRegistrado(ctx, notaID, detail.CorrelationID)
 			}
+			return err
 		}
-		// Marcar como processado ANTES de publicar (idempotência)
-		_ = c.repo.MarcarMensagemProcessada(ctx, record.MessageId)
-		return c.publishEvento(ctx, "ReservaFalhou", notaID.String(), motivoFalha, detail.CorrelationID)
-	}
+		return c.publicar(ctx, "ReservaFalhou", notaID.String(), motivo, detail.CorrelationID)
 
-	// Reserva bem-sucedida
-	_ = c.repo.MarcarMensagemProcessada(ctx, record.MessageId)
-	slog.Info("Estoque reservado com sucesso", "notaId", notaID, "itens", len(nota.Itens))
-	return c.publishEvento(ctx, "ReservaConfirmada", notaID.String(), "", detail.CorrelationID)
+	default:
+		return err
+	}
+}
+
+func (c *EstoqueConsumer) republicarRegistrado(ctx context.Context, notaID uuid.UUID, correlationID string) error {
+	registro, err := c.repo.BuscarRegistroReserva(ctx, notaID)
+	if err != nil {
+		return err
+	}
+	if registro == nil {
+		return fmt.Errorf("registro de reserva da nota %s nao encontrado apos conflito", notaID)
+	}
+	return c.publicarRegistro(ctx, notaID, registro, correlationID)
+}
+
+func (c *EstoqueConsumer) publicarRegistro(ctx context.Context, notaID uuid.UUID, registro *repositorio.RegistroReserva, correlationID string) error {
+	switch registro.Resultado {
+	case repositorio.ResultadoReservaConfirmada:
+		return c.publicar(ctx, "ReservaConfirmada", notaID.String(), "", correlationID)
+	case repositorio.ResultadoReservaFalhou:
+		return c.publicar(ctx, "ReservaFalhou", notaID.String(), registro.Motivo, correlationID)
+	default:
+		return fmt.Errorf("resultado de reserva desconhecido %q para nota %s", registro.Resultado, notaID)
+	}
 }
 
 func (c *EstoqueConsumer) publishEvento(ctx context.Context, tipoEvento, notaID, motivo, correlationID string) error {
