@@ -1,16 +1,9 @@
 name: Deploy - Development
 
+# Somente manual: o deploy na AWS gera custo e o dono optou pela demo gratuita
+# (ver "Deploy gratuito" no README). Antes disparava em todo push na main.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "servico-faturamento/**"
-      - "servico-estoque/**"
-      - "web-app/**"
-      - "infra/cdk/**"
-      - "infra/lambda-authorizer/**"
-      - ".github/workflows/deploy-dev.yml"
 
 env:
   AWS_REGION: us-east-1

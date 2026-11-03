@@ -1,0 +1,24 @@
+# Blueprint do Render (https://render.com/docs/blueprint-spec) para a DEMO GRATUITA.
+#
+# Um unico web service Docker no plano free roda DynamoDB Local em memoria +
+# API de estoque (.NET) + API de faturamento (Go). Nenhum servico AWS e usado.
+# Limitacoes do plano free: o servico "dorme" apos ~15 min sem trafego e os
+# dados (em memoria) sao perdidos a cada spin-down/deploy.
+#
+# Ambiente fiscal fixo em homologacao (tpAmb=2); nao ha integracao com a SEFAZ.
+services:
+  - type: web
+    name: emissao-nfe-demo
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./deploy/demo/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NFE_AMBIENTE
+        value: homologacao
+      # Origem do frontend publicado (GitHub Pages). Ajuste se usar outro host.
+      - key: CORS_ORIGINS
+        value: https://lucasantunesribeiro.github.io
