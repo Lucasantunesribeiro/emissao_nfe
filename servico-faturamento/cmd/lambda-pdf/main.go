@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 
+	"servico-faturamento/internal/fiscal"
 	"servico-faturamento/internal/logger"
 	"servico-faturamento/internal/observability"
 	"servico-faturamento/internal/pdf"
@@ -56,6 +57,12 @@ func NewPDFGenerator() (*PDFGenerator, error) {
 	ddbClient := dynamodb.NewFromConfig(cfg)
 	repo := repositorio.NewRepositorioDynamoDB(ddbClient, mainTableName, eventsTableName)
 
+	ambiente, err := fiscal.CarregarAmbiente(os.Getenv)
+	if err != nil {
+		return nil, fmt.Errorf("configuracao de ambiente fiscal invalida: %w", err)
+	}
+	slog.Info("Ambiente fiscal", "ambiente", ambiente.String(), "tpAmb", ambiente.TpAmb())
+
 	bucketName := os.Getenv("PDF_BUCKET_NAME")
 	if bucketName == "" {
 		bucketName = "nfe-pdfs-mock"
@@ -64,7 +71,7 @@ func NewPDFGenerator() (*PDFGenerator, error) {
 	return &PDFGenerator{
 		repo:             repo,
 		s3Client:         s3.NewFromConfig(cfg),
-		pdfGen:           pdf.NewGeradorPDF(),
+		pdfGen:           pdf.NewGeradorPDF(ambiente),
 		bucketName:       bucketName,
 		cloudFrontDomain: os.Getenv("CLOUDFRONT_DOMAIN"),
 	}, nil

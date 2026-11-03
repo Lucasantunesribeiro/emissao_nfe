@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"servico-faturamento/internal/dominio"
+	"servico-faturamento/internal/fiscal"
 	"servico-faturamento/internal/logger"
 	"servico-faturamento/internal/observability"
 	"servico-faturamento/internal/repositorio"
@@ -24,7 +25,8 @@ import (
 
 // LambdaHandler processa requisições de API Gateway e eventos SQS
 type LambdaHandler struct {
-	repo *repositorio.RepositorioDynamoDB
+	repo     *repositorio.RepositorioDynamoDB
+	ambiente fiscal.Ambiente
 }
 
 // NewLambdaHandler cria o handler com DynamoDB
@@ -38,6 +40,12 @@ func NewLambdaHandler() (*LambdaHandler, error) {
 		return nil, fmt.Errorf("DYNAMODB_TABLE_NAME and DYNAMODB_EVENTS_TABLE_NAME are required")
 	}
 
+	// Sem configuracao explicita o ambiente fiscal e homologacao (tpAmb=2).
+	ambiente, err := fiscal.CarregarAmbiente(os.Getenv)
+	if err != nil {
+		return nil, fmt.Errorf("configuracao de ambiente fiscal invalida: %w", err)
+	}
+
 	cfg, err := awsconfig.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
@@ -46,8 +54,9 @@ func NewLambdaHandler() (*LambdaHandler, error) {
 	ddbClient := dynamodb.NewFromConfig(cfg)
 	repo := repositorio.NewRepositorioDynamoDB(ddbClient, mainTableName, eventsTableName)
 
-	slog.Info("Lambda handler initialized", "mainTable", mainTableName, "eventsTable", eventsTableName)
-	return &LambdaHandler{repo: repo}, nil
+	slog.Info("Lambda handler initialized", "mainTable", mainTableName, "eventsTable", eventsTableName,
+		"ambienteFiscal", ambiente.String(), "tpAmb", ambiente.TpAmb())
+	return &LambdaHandler{repo: repo, ambiente: ambiente}, nil
 }
 
 // HandleRequest processa requisições API Gateway
@@ -139,7 +148,8 @@ func (h *LambdaHandler) handleHealthCheck(origin string, correlationID string) (
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
 		Headers:    corsHeaders(origin, correlationID),
-		Body:       `{"status":"healthy","service":"faturamento","database":"dynamodb","version":"3.0.0"}`,
+		Body: fmt.Sprintf(`{"status":"healthy","service":"faturamento","database":"dynamodb","version":"3.0.0","ambienteFiscal":%q,"tpAmb":%d}`,
+			h.ambiente.String(), h.ambiente.TpAmb()),
 	}, nil
 }
 
