@@ -156,6 +156,109 @@ public sealed class ReservarEstoqueDynamoDbTests : IClassFixture<DynamoDbLocalFi
         Assert.Equal(6, atual!.Saldo);
         Assert.Equal((uint)1, atual.Versao);
     }
+
+    [Fact]
+    public async Task Executar_RetryDaMesmaReserva_DebitaUmaUnicaVez()
+    {
+        await using var context = await _fixture.CreateContextAsync();
+
+        var produto = new Produto("SKU-IT-004", "Produto Retry", 10);
+        await context.RepositorioProdutos.SalvarProdutoAsync(produto);
+        var cmd = new ReservarEstoqueCommand(Guid.NewGuid(), produto.Id, 3);
+
+        var primeira = await context.Handler.Executar(cmd);
+        var retry = await context.Handler.Executar(cmd);
+
+        Assert.True(primeira.EhSucesso);
+        Assert.True(retry.EhSucesso);
+        Assert.Equal(primeira.Dados!.Id, retry.Dados!.Id);
+
+        var atual = await context.RepositorioProdutos.BuscarPorIdAsync(produto.Id);
+        Assert.Equal(7, atual!.Saldo);
+        Assert.Single(await context.RepositorioReservas.ListarPorNotaAsync(cmd.NotaId));
+        var evento = Assert.Single(await context.ListarEventosPorAgregadoAsync(cmd.NotaId));
+        Assert.Equal("Estoque.Reservado", evento["tipo_evento"].S);
+    }
+
+    [Fact]
+    public async Task Executar_MesmaNotaEProdutoComOutraQuantidade_NaoDebitaDeNovo()
+    {
+        await using var context = await _fixture.CreateContextAsync();
+
+        var produto = new Produto("SKU-IT-005", "Produto Quantidade", 10);
+        await context.RepositorioProdutos.SalvarProdutoAsync(produto);
+        var notaId = Guid.NewGuid();
+
+        Assert.True((await context.Handler.Executar(new ReservarEstoqueCommand(notaId, produto.Id, 3))).EhSucesso);
+        var divergente = await context.Handler.Executar(new ReservarEstoqueCommand(notaId, produto.Id, 5));
+
+        Assert.True(divergente.Falhou);
+        var atual = await context.RepositorioProdutos.BuscarPorIdAsync(produto.Id);
+        Assert.Equal(7, atual!.Saldo);
+    }
+
+    [Fact]
+    public async Task Executar_RequisicoesIdenticasConcorrentes_NuncaDebitamMaisDeUmaVez()
+    {
+        await using var context = await _fixture.CreateContextAsync();
+
+        var produto = new Produto("SKU-IT-006", "Produto Concorrente", 10);
+        await context.RepositorioProdutos.SalvarProdutoAsync(produto);
+        var cmd = new ReservarEstoqueCommand(Guid.NewGuid(), produto.Id, 4);
+
+        var resultados = await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => context.Handler.Executar(cmd)));
+
+        Assert.Contains(resultados, r => r.EhSucesso);
+        var atual = await context.RepositorioProdutos.BuscarPorIdAsync(produto.Id);
+        Assert.Equal(6, atual!.Saldo);
+        Assert.Single(await context.RepositorioReservas.ListarPorNotaAsync(cmd.NotaId));
+        Assert.Single(
+            await context.ListarEventosPorAgregadoAsync(cmd.NotaId),
+            e => e["tipo_evento"].S == "Estoque.Reservado");
+    }
+
+    [Fact]
+    public async Task Executar_ComDemoFail_NaoDebitaNemGravaReserva()
+    {
+        await using var context = await _fixture.CreateContextAsync();
+
+        var produto = new Produto("SKU-IT-007", "Produto Demo", 10);
+        await context.RepositorioProdutos.SalvarProdutoAsync(produto);
+        var cmd = new ReservarEstoqueCommand(Guid.NewGuid(), produto.Id, 2);
+
+        var resultado = await context.Handler.Executar(cmd, simularFalha: true);
+
+        Assert.True(resultado.Falhou);
+        var atual = await context.RepositorioProdutos.BuscarPorIdAsync(produto.Id);
+        Assert.Equal(10, atual!.Saldo);
+        Assert.Empty(await context.RepositorioReservas.ListarPorNotaAsync(cmd.NotaId));
+        var evento = Assert.Single(await context.ListarEventosPorAgregadoAsync(cmd.NotaId));
+        Assert.Equal("Estoque.ReservaRejeitada", evento["tipo_evento"].S);
+    }
+
+    [Fact]
+    public async Task SalvarEventoOutbox_DoisEventosNoMesmoSegundo_NaoSobrescreve()
+    {
+        await using var context = await _fixture.CreateContextAsync();
+        var repoEventos = new RepositorioDynamoDBEventos(
+            context.Client, context.EventosTableName, NullLogger<RepositorioDynamoDBEventos>.Instance);
+        var notaA = Guid.NewGuid();
+        var notaB = Guid.NewGuid();
+
+        foreach (var nota in new[] { notaA, notaB })
+        {
+            await repoEventos.SalvarEventoOutboxAsync(new EventoOutbox
+            {
+                TipoEvento = "Estoque.ReservaRejeitada",
+                IdAgregado = nota,
+                Payload = "{}",
+                DataOcorrencia = DateTime.UtcNow
+            });
+        }
+
+        Assert.Single(await context.ListarEventosPorAgregadoAsync(notaA));
+        Assert.Single(await context.ListarEventosPorAgregadoAsync(notaB));
+    }
 }
 
 public sealed class DynamoDbLocalFixture : IAsyncLifetime
@@ -234,7 +337,7 @@ public sealed class DynamoDbLocalFixture : IAsyncLifetime
 
         var correlationAccessor = new CorrelationContextAccessor();
         var repoProdutos = new RepositorioDynamoDBProdutos(_client, produtosTableName, NullLogger<RepositorioDynamoDBProdutos>.Instance);
-        var repoReservas = new RepositorioDynamoDBReservas(_client, produtosTableName, NullLogger<RepositorioDynamoDBReservas>.Instance);
+        var repoReservas = new RepositorioDynamoDBReservas(_client, produtosTableName, eventosTableName, NullLogger<RepositorioDynamoDBReservas>.Instance);
         var repoEventos = new RepositorioDynamoDBEventos(_client, eventosTableName, NullLogger<RepositorioDynamoDBEventos>.Instance);
         var handler = new ReservarEstoqueHandler(
             repoProdutos,

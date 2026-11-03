@@ -72,6 +72,7 @@ builder.Services.AddScoped<IRepositorioReservas>(sp =>
     new RepositorioDynamoDBReservas(
         sp.GetRequiredService<IAmazonDynamoDB>(),
         mainTableName,
+        eventsTableName,
         sp.GetRequiredService<ILogger<RepositorioDynamoDBReservas>>()));
 
 builder.Services.AddScoped<IRepositorioEventos>(sp =>
